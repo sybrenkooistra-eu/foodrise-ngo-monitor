@@ -2,7 +2,7 @@ name: FoodRise NGO Monitor
 
 on:
   schedule:
-    - cron: "0 7 * * 1"   # elke maandag 09:00 Amsterdam-tijd
+    - cron: "0 7 * * 2"   # elke dinsdag 09:00 Amsterdam-tijd
   workflow_dispatch:        # handmatig starten via GitHub UI
 
 jobs:
