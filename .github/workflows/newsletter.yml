@@ -1,0 +1,42 @@
+name: FoodRise NGO Monitor
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # elke maandag 09:00 Amsterdam-tijd
+  workflow_dispatch:        # handmatig starten via GitHub UI
+
+jobs:
+  newsletter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencies installeren
+        run: pip install anthropic feedparser requests beautifulsoup4
+
+      - name: Seen-cache ophalen
+        uses: actions/cache@v4
+        with:
+          path: seen_items.json
+          key: seen-${{ github.run_id }}
+          restore-keys: seen-
+
+      - name: Scraper draaien
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_USER:        ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NEWSLETTER_TO:     ${{ secrets.NEWSLETTER_TO }}
+        run: python scraper.py
+
+      - name: Seen-cache opslaan
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: seen_items.json
+          key: seen-${{ github.run_id }}

@@ -1,0 +1,464 @@
+"""
+FoodRise NGO Monitor — scraper.py
+Scrapt 11 NGO-bronnen, vat samen met Claude, mailt wekelijkse digest.
+
+Vereist omgevingsvariabelen:
+    ANTHROPIC_API_KEY
+    GMAIL_USER
+    GMAIL_APP_PASSWORD
+    NEWSLETTER_TO   (optioneel, default = GMAIL_USER)
+"""
+
+import os
+import re
+import json
+import hashlib
+import smtplib
+import feedparser
+import requests
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+from anthropic import Anthropic
+from pathlib import Path
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+SEEN_FILE = Path("seen_items.json")
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+SOURCES = [
+    # RSS
+    {"name": "Changing Markets",    "type": "rss",
+     "url": "https://changingmarkets.org/feed/"},
+    {"name": "Foodrise EU",         "type": "rss",
+     "url": "https://foodrise.eu/feed/"},
+    {"name": "GRAIN",               "type": "rss",
+     "url": "https://grain.org/en/home/entries.rss"},
+
+    # HTML — css selectors
+    {"name": "ClientEarth",         "type": "html",
+     "url": "https://www.clientearth.org/latest/news/",
+     "item_sel": "a.newsitem, a.item",
+     "title_sel": "h2, h3, .title",
+     "link_sel": None},
+    {"name": "IATP",                "type": "html",
+     "url": "https://www.iatp.org/publications/press_releases",
+     "item_sel": "article, .view-row, .teaser",
+     "title_sel": "h2, h3, .title",
+     "link_sel": "a",
+     "dedupe": True, "timeout": 30},
+    {"name": "Ecologistas en Acción", "type": "html",
+     "url": "https://www.ecologistasenaccion.org/",
+     "item_sel": "article, .post, .entry",
+     "title_sel": "h2, h3, .entry-title",
+     "link_sel": "a"},
+    {"name": "Greenpeace Aotearoa", "type": "html",
+     "url": "https://www.greenpeace.org/aotearoa/news/",
+     "item_sel": ".post",
+     "title_sel": "h2, h3",
+     "link_sel": "a"},
+
+    # HTML — card links (href aanwezig, titel via slug)
+    {"name": "Mighty Earth",        "type": "html_card_links",
+     "url": "https://mightyearth.org/news/",
+     "link_sel": "a.card-link"},
+
+    # HTML — links op URL-patroon
+    {"name": "Milieudefensie",      "type": "html_links",
+     "url": "https://milieudefensie.nl/actueel/",
+     "link_pattern": r"milieudefensie\.nl/actueel/[^#?]+$",
+     "exclude_pattern": r"milieudefensie\.nl/actueel/$"},
+    {"name": "Greenpeace Nordic",   "type": "html_links",
+     "url": "https://www.greenpeace.org/denmark/pressemeddelelse/",
+     "link_pattern": r"greenpeace\.org/denmark/(pressemeddelelse|nyhed)/[^#?]+/[^#?]+/$"},
+    {"name": "Justicia Alimentaria","type": "html_links",
+     "url": "https://justiciaalimentaria.org/sala-de-prensa/",
+     "link_pattern": r"justiciaalimentaria\.org/[a-z0-9-]{10,}/$",
+     "exclude_pattern": (r"/(que-hacemos|unete|hazte|donativo|voluntariado|legado|"
+                          r"quienes|sala-de-prensa|actualidad|videos|observatorio|"
+                          r"contacto|aviso|politica|cookies|transparencia|alianzas|"
+                          r"trabaja|ca|buzon|haz-un)"),
+    },
+    {"name": "Seastemik",           "type": "html_links",
+     "url": "https://seastemik.org/presse-and-actu",
+     "link_pattern": r"https?://",
+     "exclude_pattern": (r"seastemik\.org|helloasso\.com|facebook|twitter|"
+                          r"instagram|linkedin|youtube|mailto")},
+]
+
+SYSTEM_PROMPT = """Je bent een research-assistent voor Sybren Kooistra, Campaign Director van FoodRise.
+FoodRise is een Nederlandse campagneorganisatie die de klimaat- en biodiversiteitsimpact van
+industriële dierlijke landbouw (Big Ag / Big Agro) aanpakt. Doelwitten zijn onder andere
+FrieslandCampina, Vion, Nutreco. FoodRise werkt aan greenwashing-onderzoek, juridische strategie
+(ACM-klachten, Scope 3 aansprakelijkheid) en EU-beleidsdruk.
+
+Geef een gestructureerde samenvatting van het nieuwsitem in het Nederlands.
+Gebruik dit exacte formaat — geen extra tekst ervoor of erna:
+
+Type: [één of twee van: rapport | campagne | rechtszaak | beleidsdruk | greenwashing | onderzoek | reactie | anders]
+Onderwerp: [één of twee van: methaan | scope3 | kweekvis | ontbossing | subsidies | veehouderij | aquafeed | lobby | financiering | anders]
+Samenvatting: [2-3 zinnen: wat is het concreet, wie doet het, waarom relevant voor FoodRise]"""
+
+# ── Hulpfuncties ──────────────────────────────────────────────────────────────
+
+def uid(text):
+    return hashlib.md5(text.encode()).hexdigest()[:12]
+
+def load_seen():
+    if SEEN_FILE.exists():
+        return set(json.loads(SEEN_FILE.read_text()))
+    return set()
+
+def save_seen(seen):
+    SEEN_FILE.write_text(json.dumps(sorted(seen), indent=2))
+
+def abs_url(href, base):
+    if not href or href.startswith("#") or href.startswith("mailto"):
+        return ""
+    if href.startswith("http"):
+        return href
+    p = urlparse(base)
+    if href.startswith("/"):
+        return f"{p.scheme}://{p.netloc}{href}"
+    return base.rstrip("/") + "/" + href
+
+def slug_to_title(url):
+    path = urlparse(url).path.rstrip("/")
+    slug = path.split("/")[-1]
+    return slug.replace("-", " ").title()
+
+def clean_title(raw):
+    """Verwijder datum en type-suffix die Milieudefensie aan titels plakt."""
+    raw = re.sub(r"\d{1,2} (januari|februari|maart|april|mei|juni|juli|augustus|"
+                  r"september|oktober|november|december) \d{4}", "", raw)
+    raw = re.sub(r"\s*(Nieuws|Blog|Opinie|Agenda)$", "", raw.strip())
+    return raw.strip()
+
+def get_snippet(entry):
+    for field in ("summary", "content"):
+        val = entry.get(field, "")
+        if isinstance(val, list):
+            val = val[0].get("value", "") if val else ""
+        if val:
+            return BeautifulSoup(val, "html.parser").get_text(" ", strip=True)[:600]
+    return ""
+
+def fetch(url, timeout=15):
+    return requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+
+# ── Scrapers per type ─────────────────────────────────────────────────────────
+
+def scrape_rss(source):
+    feed = feedparser.parse(source["url"])
+    if feed.get("status") != 200 or not feed.entries:
+        return []
+    items = []
+    for e in feed.entries[:20]:
+        link = e.get("link", "")
+        title = e.get("title", "").strip()
+        if not link or not title:
+            continue
+        items.append({
+            "id": uid(link),
+            "source": source["name"],
+            "title": title,
+            "link": link,
+            "snippet": get_snippet(e),
+        })
+    return items
+
+def scrape_html(source):
+    try:
+        r = fetch(source["url"], timeout=source.get("timeout", 15))
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    item_sel  = source.get("item_sel", "article")
+    title_sel = source.get("title_sel", "h2, h3")
+    link_sel  = source.get("link_sel", "a")
+    dedupe    = source.get("dedupe", False)
+
+    containers = soup.select(item_sel)
+    if not containers:
+        return []
+
+    seen_urls = set()
+    items = []
+    for container in containers[:20]:
+        if link_sel is None:
+            link_tag = container if container.name == "a" else container.find("a")
+        else:
+            link_tag = container.select_one(link_sel)
+
+        href = abs_url(link_tag.get("href", "") if link_tag else "", source["url"])
+        if not href or (dedupe and href in seen_urls):
+            continue
+        seen_urls.add(href)
+
+        title_tag = container.select_one(title_sel) if title_sel else None
+        title = (title_tag or link_tag or container).get_text(strip=True)
+        title = clean_title(title[:200])
+        if len(title) < 5:
+            continue
+
+        snippet = container.get_text(" ", strip=True)[:500]
+        items.append({
+            "id": uid(href),
+            "source": source["name"],
+            "title": title,
+            "link": href,
+            "snippet": snippet,
+        })
+    return items
+
+def scrape_html_card_links(source):
+    try:
+        r = fetch(source["url"])
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    seen = set()
+    items = []
+    for tag in soup.select(source.get("link_sel", "a")):
+        href = abs_url(tag.get("href", ""), source["url"])
+        if not href or href in seen:
+            continue
+        seen.add(href)
+        items.append({
+            "id": uid(href),
+            "source": source["name"],
+            "title": slug_to_title(href),
+            "link": href,
+            "snippet": "",
+        })
+    return items
+
+def scrape_html_links(source):
+    try:
+        r = fetch(source["url"])
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    include_pat = re.compile(source["link_pattern"])
+    exclude_pat = re.compile(source.get("exclude_pattern", "^$"))
+
+    seen = set()
+    items = []
+    for a in soup.find_all("a", href=True):
+        full = abs_url(a["href"], source["url"])
+        if not full or full in seen:
+            continue
+        if include_pat.search(full) and not exclude_pat.search(full):
+            title = clean_title(a.get_text(strip=True)[:200])
+            if len(title) > 4:
+                seen.add(full)
+                items.append({
+                    "id": uid(full),
+                    "source": source["name"],
+                    "title": title,
+                    "link": full,
+                    "snippet": "",
+                })
+    return items
+
+def scrape(source):
+    t = source["type"]
+    if t == "rss":
+        return scrape_rss(source)
+    elif t == "html":
+        return scrape_html(source)
+    elif t == "html_card_links":
+        return scrape_html_card_links(source)
+    elif t == "html_links":
+        return scrape_html_links(source)
+    return []
+
+# ── AI samenvatting ───────────────────────────────────────────────────────────
+
+def summarise(client, item):
+    msg = (f"Bron: {item['source']}\n"
+           f"Titel: {item['title']}\n"
+           f"URL: {item['link']}\n"
+           f"Context: {item.get('snippet') or '(geen)'}\n\n"
+           "Geef de gestructureerde samenvatting.")
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": msg}],
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        return f"Type: anders\nOnderwerp: onbekend\nSamenvatting: Kon niet samenvatten ({e})"
+
+def parse_summary(raw):
+    result = {"types": [], "topics": [], "body": ""}
+    for line in raw.splitlines():
+        if line.startswith("Type:"):
+            result["types"] = [t.strip() for t in line.replace("Type:", "").split("|") if t.strip()]
+        elif line.startswith("Onderwerp:"):
+            result["topics"] = [t.strip() for t in line.replace("Onderwerp:", "").split("|") if t.strip()]
+        elif line.startswith("Samenvatting:"):
+            result["body"] = line.replace("Samenvatting:", "").strip()
+    if not result["body"]:
+        result["body"] = raw
+    return result
+
+# ── HTML nieuwsbrief ──────────────────────────────────────────────────────────
+
+def build_html(items_by_source, week):
+    total = sum(len(v) for v in items_by_source.values())
+
+    def tag(text, bg, fg):
+        return (f'<span style="background:{bg};color:{fg};padding:2px 9px;'
+                f'border-radius:20px;font-size:11px;font-weight:700;'
+                f'margin-right:4px;text-transform:uppercase;letter-spacing:.5px">'
+                f'{text}</span>')
+
+    sections = ""
+    for source_name, items in items_by_source.items():
+        cards = ""
+        for item in items:
+            p = parse_summary(item["summary"])
+            tags_html = (
+                "".join(tag(t, "#9FE870", "#1C4332") for t in p["types"]) +
+                "".join(tag(t, "#E8703A", "#fff")    for t in p["topics"])
+            )
+            cards += f"""
+            <div style="border-left:3px solid #9FE870;padding:10px 16px;
+                        margin-bottom:18px;background:#fafafa">
+              <div style="margin-bottom:7px">{tags_html}</div>
+              <p style="margin:0 0 5px;font-weight:600;font-size:15px;
+                        color:#1C4332;line-height:1.3">
+                <a href="{item['link']}" style="color:#1C4332;text-decoration:none">
+                  {item['title']}
+                </a>
+              </p>
+              <p style="margin:0 0 6px;font-size:14px;color:#333;line-height:1.5">
+                {p['body']}
+              </p>
+              <a href="{item['link']}"
+                 style="font-size:12px;color:#E8703A;text-decoration:none">
+                → lees verder
+              </a>
+            </div>"""
+
+        sections += f"""
+        <div style="margin-bottom:32px">
+          <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                     text-transform:uppercase;color:#1C4332;
+                     border-bottom:2px solid #9FE870;
+                     padding-bottom:5px;margin-bottom:14px">
+            {source_name}
+          </h2>
+          {cards}
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="nl">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+             max-width:660px;margin:0 auto;padding:20px;background:#fff;color:#222">
+  <div style="background:#1C4332;padding:22px 26px;border-radius:6px;margin-bottom:28px">
+    <h1 style="color:#9FE870;margin:0 0 4px;font-size:20px;font-weight:700">
+      FoodRise NGO Monitor
+    </h1>
+    <p style="color:#c8e6c9;margin:0;font-size:13px">
+      Week van {week} &nbsp;·&nbsp;
+      {total} nieuwe items uit {len(items_by_source)} bronnen
+    </p>
+  </div>
+  {sections if sections else '<p style="color:#888">Geen nieuwe items deze week.</p>'}
+  <p style="color:#bbb;font-size:11px;border-top:1px solid #eee;
+            padding-top:14px;margin-top:28px">
+    FoodRise NGO Monitor · automatisch gegenereerd
+  </p>
+</body>
+</html>"""
+
+# ── Mail ──────────────────────────────────────────────────────────────────────
+
+def send_mail(html, subject):
+    sender    = os.environ["GMAIL_USER"]
+    password  = os.environ["GMAIL_APP_PASSWORD"]
+    recipient = os.environ.get("NEWSLETTER_TO", sender)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = sender
+    msg["To"]      = recipient
+    msg.attach(MIMEText(html, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+        srv.login(sender, password)
+        srv.sendmail(sender, recipient, msg.as_string())
+    print(f"✓ Verstuurd naar {recipient}")
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    print("FoodRise NGO Monitor — start")
+    client = Anthropic()
+    seen   = load_seen()
+    week   = datetime.now().strftime("%-d %B %Y")
+
+    items_by_source = {}
+    new_seen = set()
+
+    for source in SOURCES:
+        print(f"  {source['name']} …", end=" ", flush=True)
+        all_items = scrape(source)
+        fresh = [i for i in all_items if i["id"] not in seen]
+
+        if not fresh:
+            print("geen nieuw")
+            continue
+
+        print(f"{len(fresh)} nieuw — samenvatten …")
+        summarised = []
+        for item in fresh:
+            item["summary"] = summarise(client, item)
+            summarised.append(item)
+            new_seen.add(item["id"])
+
+        items_by_source[source["name"]] = summarised
+
+    total = sum(len(v) for v in items_by_source.values())
+    print(f"\nTotaal: {total} nieuwe items")
+
+    save_seen(seen | new_seen)
+
+    if total == 0:
+        print("Niets te versturen.")
+        return
+
+    html    = build_html(items_by_source, week)
+    subject = f"FoodRise NGO Monitor · {week} · {total} items"
+    send_mail(html, subject)
+    print("Klaar.")
+
+
+if __name__ == "__main__":
+    main()
