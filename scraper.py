@@ -95,6 +95,59 @@ SOURCES = [
      "link_pattern": r"https?://",
      "exclude_pattern": (r"seastemik\.org|helloasso\.com|facebook|twitter|"
                           r"instagram|linkedin|youtube|mailto")},
+    # ── Nieuwe bronnen ──────────────────────────────────────
+
+    {"name": "Greenpeace UK",
+     "type": "html_links",
+     "url": "https://www.greenpeace.org.uk/news/",
+     "link_pattern": r"greenpeace\.org\.uk/news/[a-z0-9-]{10,}/$",
+     "exclude_pattern": r"greenpeace\.org\.uk/news/$"},
+
+    {"name": "Greenpeace Africa",
+     "type": "html_links",
+     "url": "https://www.greenpeace.org/africa/en/news/",
+     "link_pattern": r"greenpeace\.org/africa/en/press/\d+/[a-z0-9-]+",
+     "exclude_pattern": r"^$"},
+
+    {"name": "Greenpeace NL",
+     "type": "html_links",
+     "url": "https://www.greenpeace.org/nl/nieuws/nieuwsberichten/",
+     "link_pattern": r"greenpeace\.org/nl/nieuws/[a-z0-9-]+/[a-z0-9-]{5,}",
+     "exclude_pattern": r"/(nieuwsberichten|pers|onderzoek|blogs)/?$"},
+
+    {"name": "Naturskyddsföreningen",
+     "type": "html",
+     "url": "https://www.naturskyddsforeningen.se/aktuella-kampanjer-och-projekt/",
+     "item_sel": "div[data-block=\'theme/blurbs\'] a",
+     "title_sel": "p, h2, h3",
+     "link_sel": None},
+
+    {"name": "Food Foundation",
+     "type": "html_links",
+     "url": "https://foodfoundation.org.uk/press-area",
+     "link_pattern": r"foodfoundation\.org\.uk/press-release/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+    # ── CIWF (meerdere landen) ────────────────────────────
+    {"name": "CIWF UK",
+     "type": "html_a_title",
+     "url": "https://www.ciwf.org/media-and-news/press-releases-and-media-statements/",
+     "link_sel": "div.container-small div.row a[title]"},
+
+    {"name": "CIWF EU",
+     "type": "html_a_title",
+     "url": "https://www.ciwf.eu/media-and-news/press-releases/",
+     "link_sel": "div.container-small div.row a[title]"},
+
+    {"name": "CIWF FR",
+     "type": "html_a_title",
+     "url": "https://www.ciwf.fr/actualites-et-publications/communiques-de-presse/",
+     "link_sel": "div.container-small div.row a[title]"},
+
+    {"name": "CIWF IT",
+     "type": "html_a_title",
+     "url": "https://www.ciwf.it/area-stampa/comunicati-stampa/",
+     "link_sel": "div.container-small div.row a[title]"},
+
 ]
 
 SYSTEM_PROMPT = """Je bent een research-assistent voor Sybren Kooistra, Campaign Director van FoodRise.
@@ -281,6 +334,51 @@ def scrape_html_links(source):
                 })
     return items
 
+
+def scrape_html_a_title(source):
+    """Scrape <a> elementen waarbij de titel in het title-attribuut zit."""
+    try:
+        r = fetch(source["url"], timeout=source.get("timeout", 15))
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    link_sel = source.get("link_sel", "a[title]")
+    p = urlparse(source["url"])
+    base = f"{p.scheme}://{p.netloc}"
+
+    seen = set()
+    items = []
+    for a in soup.select(link_sel):
+        href = a.get("href", "")
+        title = a.get("title", "").strip() or a.get("aria-label", "").replace(" - Read more", "").strip()
+
+        if not href or not title or len(title) < 5:
+            continue
+
+        # Maak absolute URL
+        if href.startswith("http"):
+            full_url = href
+        elif href.startswith("/"):
+            full_url = base + href
+        else:
+            continue
+
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+
+        items.append({
+            "id": uid(full_url),
+            "source": source["name"],
+            "title": title[:200],
+            "link": full_url,
+            "snippet": "",
+        })
+    return items
+
 def scrape(source):
     t = source["type"]
     if t == "rss":
@@ -291,6 +389,8 @@ def scrape(source):
         return scrape_html_card_links(source)
     elif t == "html_links":
         return scrape_html_links(source)
+    elif t == "html_a_title":
+        return scrape_html_a_title(source)
     return []
 
 # ── AI samenvatting ───────────────────────────────────────────────────────────
