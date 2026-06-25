@@ -28,6 +28,75 @@ from pathlib import Path
 
 SEEN_FILE = Path("seen_items.json")
 
+OPINION_SOURCES = [
+    # ── Opinie & Analyse — websites ───────────────────────────────────────────
+    {"name": "MO* (BE)",
+     "type": "html_links",
+     "url": "https://www.mo.be/themas/klimaat-duurzaamheid",
+     "link_pattern": r"mo\.be/(artikel|opinie|analyse|interview|reportage)/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    {"name": "Reporterre (FR)",
+     "type": "rss",
+     "url": "https://reporterre.net/spip.php?page=backend-simple"},
+
+    {"name": "El Salto (ES)",
+     "type": "html_links",
+     "url": "https://www.elsaltodiario.com/alimentacion",
+     "link_pattern": r"elsaltodiario\.com/[a-z-]{3,}/[a-z0-9-]{20,}",
+     "exclude_pattern": r"/(suscrib|tienda|contacto|quienes|accesibil|salto-de-carro|"
+                         r"de-salto-en-salto|formulario|encontrar|contrasena|autor|radio|"
+                         r"podcast|agenda|hemeroteca)"},
+
+    {"name": "Klimareporter (DE)",
+     "type": "html_links",
+     "url": "https://klimareporter.de/landwirtschaft",
+     "link_pattern": r"klimareporter\.de/[a-z-]+/[a-z0-9-]{15,}",
+     "exclude_pattern": r"/(ueber-uns|kontakt|newsletter|impressum|datenschutz|spenden|"
+                         r"energiewende|klimapolitik|deutschland|europaeische|international|"
+                         r"klimakonferenzen|landwirtschaft|verkehr|gebaeude|industrie|finanzen)/?$"},
+
+    {"name": "The Guardian (EN)",
+     "type": "rss",
+     "url": "https://www.theguardian.com/commentisfree/commentisfree+environment/farming/rss"},
+
+    {"name": "Le Monde Agriculture (FR)",
+     "type": "rss",
+     "url": "https://www.lemonde.fr/agriculture/rss_full.xml"},
+
+    {"name": "Grist Food & Agriculture (EN)",
+     "type": "rss",
+     "url": "https://grist.org/food-and-agriculture/feed/"},
+
+    {"name": "Dagens Nyheter Jordbruk (SE)",
+     "type": "html_links",
+     "url": "https://www.dn.se/om/jordbruk/",
+     "link_pattern": r"dn\.se/(ekonomi|debatt|nyheter|kultur)/[a-z0-9-]{10,}",
+     "exclude_pattern": r"/(prenumerera|kundservice|kontakt|om-dn)"},
+
+    # ── Podcasts ──────────────────────────────────────────────────────────────
+    {"name": "The BREAK—DOWN (EN)",
+     "type": "rss",
+     "url": "https://anchor.fm/s/f5684160/podcast/rss"},
+
+    {"name": "Macrodose (EN)",
+     "type": "rss",
+     "url": "https://anchor.fm/s/b746ee18/podcast/rss"},
+
+    {"name": "Overshoot Podcast (EN)",
+     "type": "rss",
+     "url": "https://anchor.fm/s/108013034/podcast/rss"},
+
+    {"name": "Between Heat and Hope (NL/EN)",
+     "type": "rss",
+     "url": "https://media.rss.com/between-heat-and-hope/feed.xml"},
+
+    {"name": "Dissens (DE)",
+     "type": "rss",
+     "url": "https://podcast.dissenspodcast.de/feed/mp3"},
+]
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -427,7 +496,7 @@ def parse_summary(raw):
 
 # ── HTML nieuwsbrief ──────────────────────────────────────────────────────────
 
-def build_html(items_by_source, week):
+def build_html(items_by_source, week, opinion_html=""):
     total = sum(len(v) for v in items_by_source.values())
 
     def tag(text, bg, fg):
@@ -491,6 +560,7 @@ def build_html(items_by_source, week):
     </p>
   </div>
   {sections if sections else '<p style="color:#888">Geen nieuwe items deze week.</p>'}
+  {opinion_html}
   <p style="color:#bbb;font-size:11px;border-top:1px solid #eee;
             padding-top:14px;margin-top:28px">
     FoodRise NGO Monitor · automatisch gegenereerd
@@ -517,6 +587,169 @@ def send_mail(html, subject):
     print(f"✓ Verstuurd naar {recipient}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+# ── Opinie & Analyse sectie ───────────────────────────────────────────────────
+
+def scrape_opinion_source(source):
+    """Scrape één opiniebron, geeft lijst van {title, link} terug."""
+    import re as _re
+    from urllib.parse import urlparse as _up
+
+    def _abs(href, base):
+        if not href or href.startswith("#") or href.startswith("mailto"):
+            return ""
+        if href.startswith("http"):
+            return href
+        p = _up(base)
+        return f"{p.scheme}://{p.netloc}{href}" if href.startswith("/") else base.rstrip("/") + "/" + href
+
+    t = source["type"]
+    items = []
+
+    if t == "rss":
+        feed = feedparser.parse(source["url"])
+        for e in feed.entries[:30]:
+            link = e.get("link", "")
+            title = e.get("title", "").strip()
+            if link and title:
+                items.append({"source": source["name"], "title": title, "link": link})
+
+    elif t == "html_links":
+        try:
+            r = fetch(source["url"])
+            r.raise_for_status()
+        except Exception:
+            return []
+        soup = BeautifulSoup(r.text, "html.parser")
+        inc = _re.compile(source["link_pattern"])
+        exc = _re.compile(source.get("exclude_pattern", "^$"))
+        seen = set()
+        for a in soup.find_all("a", href=True):
+            full = _abs(a["href"], source["url"])
+            if not full or full in seen:
+                continue
+            if inc.search(full) and not exc.search(full):
+                title = a.get_text(strip=True)[:120]
+                if len(title) > 8:
+                    seen.add(full)
+                    items.append({"source": source["name"], "title": title, "link": full})
+
+    return items[:20]
+
+
+def select_opinion(client, candidates):
+    """Stuur alle kandidaten naar Claude, laat top 5 selecteren en samenvatten."""
+    if not candidates:
+        return []
+
+    lijst = "\n".join(
+        f"{i+1}. [{c['source']}] {c['title']} — {c['link']}"
+        for i, c in enumerate(candidates)
+    )
+
+    prompt = f"""Je bent research-assistent voor FoodRise, een Nederlandse campagneorganisatie
+die de klimaat- en biodiversiteitsimpact van industriële dierlijke landbouw (Big Ag) aanpakt.
+Doelwitten zijn FrieslandCampina, Vion, Nutreco. Thema's: veehouderij, methaan, Scope 3,
+greenwashing, EU-landbouwbeleid, kweekvis, ontbossing voor veevoer.
+
+Hieronder staan opinie- en analyseartikelen uit Europese progressieve media.
+Selecteer de 5 MEEST RELEVANTE voor FoodRise. Geef per artikel:
+- Een Nederlandse samenvatting van precies 3 zinnen
+- De originele link
+
+Gebruik dit exacte formaat — vijf blokken, geen extra tekst:
+
+ARTIKEL 1
+Bron: [naam]
+Titel: [originele titel]
+Link: [url]
+Samenvatting: [3 zinnen in het Nederlands]
+
+ARTIKEL 2
+[etc.]
+
+Kandidaten:
+{lijst}"""
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+    except Exception as e:
+        print(f"  ⚠ Opinie-selectie mislukt: {e}")
+        return []
+
+    # Parse de vijf blokken
+    articles = []
+    for block in raw.split("ARTIKEL ")[1:]:
+        lines = block.strip().splitlines()
+        entry = {}
+        summary_lines = []
+        in_summary = False
+        for line in lines:
+            if line.startswith("Bron:"):
+                entry["source"] = line.replace("Bron:", "").strip()
+            elif line.startswith("Titel:"):
+                entry["title"] = line.replace("Titel:", "").strip()
+            elif line.startswith("Link:"):
+                entry["link"] = line.replace("Link:", "").strip()
+            elif line.startswith("Samenvatting:"):
+                summary_lines.append(line.replace("Samenvatting:", "").strip())
+                in_summary = True
+            elif in_summary and line.strip():
+                summary_lines.append(line.strip())
+        entry["summary"] = " ".join(summary_lines)
+        if entry.get("title") and entry.get("link") and entry.get("summary"):
+            articles.append(entry)
+
+    return articles[:5]
+
+
+def build_opinion_section(articles):
+    """Bouw HTML voor de opinie-sectie."""
+    if not articles:
+        return ""
+
+    cards = ""
+    for art in articles:
+        source = art.get("source", "")
+        title = art.get("title", "")
+        link = art.get("link", "#")
+        summary = art.get("summary", "")
+        cards += f"""
+        <div style="border-left:3px solid #E8703A;padding:10px 16px;
+                    margin-bottom:18px;background:#fafafa">
+          <div style="font-size:11px;font-weight:700;color:#E8703A;
+                      text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">
+            {source}
+          </div>
+          <p style="margin:0 0 5px;font-weight:600;font-size:15px;
+                    color:#1C4332;line-height:1.3">
+            <a href="{link}" style="color:#1C4332;text-decoration:none">{title}</a>
+          </p>
+          <p style="margin:0 0 6px;font-size:14px;color:#333;line-height:1.5">
+            {summary}
+          </p>
+          <a href="{link}" style="font-size:12px;color:#E8703A;text-decoration:none">
+            → lees verder
+          </a>
+        </div>"""
+
+    return f"""
+    <div style="margin-bottom:32px">
+      <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                 text-transform:uppercase;color:#1C4332;
+                 border-bottom:2px solid #E8703A;
+                 padding-bottom:5px;margin-bottom:14px">
+        Opinie &amp; Analyse — 5 geselecteerde stukken
+      </h2>
+      {cards}
+    </div>"""
+
+
 
 def main():
     print("FoodRise NGO Monitor — start")
@@ -554,7 +787,18 @@ def main():
         print("Niets te versturen.")
         return
 
-    html    = build_html(items_by_source, week)
+    # Opinie & Analyse sectie
+    print("\nOpinie & Analyse bronnen scrapen …")
+    opinion_candidates = []
+    for src in OPINION_SOURCES:
+        items = scrape_opinion_source(src)
+        print(f"  {src['name']}: {len(items)} kandidaten")
+        opinion_candidates.extend(items)
+    print(f"  Totaal {len(opinion_candidates)} kandidaten → top 5 selecteren …")
+    selected_opinion = select_opinion(client, opinion_candidates)
+    opinion_html = build_opinion_section(selected_opinion)
+
+    html    = build_html(items_by_source, week, opinion_html)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
     print("Klaar.")
