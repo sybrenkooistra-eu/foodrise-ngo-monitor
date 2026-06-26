@@ -94,6 +94,12 @@ OPINION_SOURCES = [
     {"name": "Dissens (DE)",
      "type": "rss",
      "url": "https://podcast.dissenspodcast.de/feed/mp3"},
+    {"name": "Critical Takes (EN)",
+     "type": "html_links",
+     "url": "https://criticaltakes.org/society-and-nature/",
+     "link_pattern": r"criticaltakes\.org/society-and-nature/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
 ]
 
 
