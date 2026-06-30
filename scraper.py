@@ -202,6 +202,12 @@ SOURCES = [
      "url": "https://foodfoundation.org.uk/press-area",
      "link_pattern": r"foodfoundation\.org\.uk/press-release/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
+    # ── CAFF ──────────────────────────────────────────────
+    {"name": "CAFF (UK)",
+     "type": "html_a_img_alt",
+     "url": "https://www.caff.org.uk/press",
+     "link_sel": ".blog-basic-grid--container a.image-wrapper[href*='/press/']"},
+
     # ── CIWF (meerdere landen) ────────────────────────────
     {"name": "CIWF UK",
      "type": "html_a_title",
@@ -236,6 +242,7 @@ Gebruik dit exacte formaat — geen extra tekst ervoor of erna:
 
 Type: [één of twee van: rapport | campagne | rechtszaak | beleidsdruk | greenwashing | onderzoek | reactie | anders]
 Onderwerp: [één of twee van: methaan | scope3 | kweekvis | ontbossing | subsidies | veehouderij | aquafeed | lobby | financiering | anders]
+Relevantie: [hoog | midden | laag] — hoog = direct bruikbaar voor FoodRise campagnes (FrieslandCampina/Vion/Nutreco, methaan, kweekvis, Scope 3, EU-beleid); midden = relevante sector maar geen directe link met FoodRise's doelwitten/thema's; laag = raakt het onderwerp slechts zijdelings
 Samenvatting: [2-3 zinnen: wat is het concreet, wie doet het, waarom relevant voor FoodRise]"""
 
 # ── Hulpfuncties ──────────────────────────────────────────────────────────────
@@ -454,6 +461,46 @@ def scrape_html_a_title(source):
         })
     return items
 
+def scrape_html_a_img_alt(source):
+    """Scrape <a> elementen waarbij de titel in het alt-attribuut van de eerste <img> zit."""
+    try:
+        r = fetch(source["url"], timeout=source.get("timeout", 15))
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    link_sel = source.get("link_sel", "a")
+    p = urlparse(source["url"])
+    base = f"{p.scheme}://{p.netloc}"
+
+    seen = set()
+    items = []
+    for a in soup.select(link_sel):
+        href = a.get("href", "")
+        img = a.find("img")
+        title = ""
+        if img:
+            title = img.get("alt", "").strip()
+        if not title:
+            title = a.get("title", "").strip() or a.get("aria-label", "").strip()
+        if not href or not title or len(title) < 5:
+            continue
+        full_url = base + href if href.startswith("/") else href
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        items.append({
+            "id": uid(full_url),
+            "source": source["name"],
+            "title": title[:200],
+            "link": full_url,
+            "snippet": "",
+        })
+    return items
+
+
 def scrape(source):
     t = source["type"]
     if t == "rss":
@@ -466,6 +513,8 @@ def scrape(source):
         return scrape_html_links(source)
     elif t == "html_a_title":
         return scrape_html_a_title(source)
+    elif t == "html_a_img_alt":
+        return scrape_html_a_img_alt(source)
     return []
 
 # ── AI samenvatting ───────────────────────────────────────────────────────────
@@ -488,12 +537,16 @@ def summarise(client, item):
         return f"Type: anders\nOnderwerp: onbekend\nSamenvatting: Kon niet samenvatten ({e})"
 
 def parse_summary(raw):
-    result = {"types": [], "topics": [], "body": ""}
+    result = {"types": [], "topics": [], "body": "", "relevance": "midden"}
     for line in raw.splitlines():
         if line.startswith("Type:"):
             result["types"] = [t.strip() for t in line.replace("Type:", "").split("|") if t.strip()]
         elif line.startswith("Onderwerp:"):
             result["topics"] = [t.strip() for t in line.replace("Onderwerp:", "").split("|") if t.strip()]
+        elif line.startswith("Relevantie:"):
+            val = line.replace("Relevantie:", "").strip().lower()
+            if val in ("hoog", "midden", "laag"):
+                result["relevance"] = val
         elif line.startswith("Samenvatting:"):
             result["body"] = line.replace("Samenvatting:", "").strip()
     if not result["body"]:
@@ -511,17 +564,31 @@ def build_html(items_by_source, week, opinion_html=""):
                 f'margin-right:4px;text-transform:uppercase;letter-spacing:.5px">'
                 f'{text}</span>')
 
+    REL_COLORS = {
+        "hoog":   ("#1C4332", "#9FE870", "● Hoog"),
+        "midden": ("#92660b", "#FCE9B8", "● Midden"),
+        "laag":   ("#888",    "#eee",    "● Laag"),
+    }
+
+    def relevance_badge(level):
+        fg, bg, label = REL_COLORS.get(level, REL_COLORS["midden"])
+        return (f'<span style="background:{bg};color:{fg};padding:2px 10px;'
+                f'border-radius:20px;font-size:11px;font-weight:700;'
+                f'margin-right:6px;letter-spacing:.3px">{label}</span>')
+
     sections = ""
     for source_name, items in items_by_source.items():
         cards = ""
         for item in items:
             p = parse_summary(item["summary"])
             tags_html = (
+                relevance_badge(p["relevance"]) +
                 "".join(tag(t, "#9FE870", "#1C4332") for t in p["types"]) +
                 "".join(tag(t, "#E8703A", "#fff")    for t in p["topics"])
             )
+            border_color = {"hoog": "#9FE870", "midden": "#FCE9B8", "laag": "#ddd"}.get(p["relevance"], "#9FE870")
             cards += f"""
-            <div style="border-left:3px solid #9FE870;padding:10px 16px;
+            <div style="border-left:3px solid {border_color};padding:10px 16px;
                         margin-bottom:18px;background:#fafafa">
               <div style="margin-bottom:7px">{tags_html}</div>
               <p style="margin:0 0 5px;font-weight:600;font-size:15px;
