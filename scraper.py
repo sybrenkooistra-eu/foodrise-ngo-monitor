@@ -94,6 +94,14 @@ OPINION_SOURCES = [
     {"name": "Dissens (DE)",
      "type": "rss",
      "url": "https://podcast.dissenspodcast.de/feed/mp3"},
+    {"name": "Sentient Media (EN)",
+     "type": "html_links",
+     "url": "https://sentientmedia.org/category/agriculture/",
+     "link_pattern": r"sentientmedia\.org/[a-z0-9-]{10,}/?$",
+     "exclude_pattern": r"/(category|tag|author|page|donate|about|newsletter|contact|"
+                         r"subscribe|membership|foodandfarm|inside-iowa|sustainable-agriculture|"
+                         r"what-is|explainer|resource)"},
+
     {"name": "Critical Takes (EN)",
      "type": "html_links",
      "url": "https://criticaltakes.org/society-and-nature/",
@@ -202,6 +210,12 @@ SOURCES = [
      "url": "https://foodfoundation.org.uk/press-area",
      "link_pattern": r"foodfoundation\.org\.uk/press-release/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
+    # ── Project Slingshot ─────────────────────────────────
+    {"name": "Project Slingshot (UK)",
+     "type": "html_a_title",
+     "url": "https://projectslingshot.com/category/campaigns/",
+     "link_sel": ".container a.group[href*='projectslingshot.com']:not([href*='sign-up']):not([href*='donate'])"},
+
     # ── CAFF ──────────────────────────────────────────────
     {"name": "CAFF (UK)",
      "type": "html_a_img_alt",
