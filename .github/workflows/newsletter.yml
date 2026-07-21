@@ -2,7 +2,7 @@ name: FoodRise Newsletter
 
 on:
   schedule:
-    - cron: "0 7 * * 2"
+    - cron: "30 5 * * 2"
   workflow_dispatch:
 
 jobs:
