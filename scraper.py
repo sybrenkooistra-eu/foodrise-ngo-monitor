@@ -221,6 +221,83 @@ SOURCES = [
      "url": "https://www.caff.org.uk/press",
      "link_sel": ".blog-basic-grid--container a.image-wrapper[href*='/press/']"},
 
+    # ── ProVeg ────────────────────────────────────────────
+    {"name": "ProVeg (INT)",
+     "type": "html_links",
+     "url": "https://proveg.org/about-us/media-room/",
+     "link_pattern": r"proveg\.org/press-release/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Madrebrava ────────────────────────────────────────
+    {"name": "Madrebrava (EU)",
+     "type": "html_links",
+     "url": "https://www.madrebrava.org/latest",
+     "link_pattern": r"madrebrava\.org/latest/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Vegetarisk ────────────────────────────────────────
+    {"name": "Vegetarisk (DK)",
+     "type": "html_links",
+     "url": "https://vegetarisk.dk/nyheder/",
+     "link_pattern": r"vegetarisk\.dk/[a-z0-9-]{5,}",
+     "exclude_pattern": r"/(nyheder|soeger|kollega|telefundraiser|bliv|stillinger|jobs?)/?$"},
+
+    # ── The Protein Project ───────────────────────────────
+    {"name": "The Protein Project (EU)",
+     "type": "html_links",
+     "url": "https://www.theproteinproject.eu/publications",
+     "link_pattern": r"theproteinproject\.eu/publications/[a-z0-9-]{5,}",
+     "exclude_pattern": r"/category/"},
+
+    # ── BirdLife ──────────────────────────────────────────
+    {"name": "BirdLife (INT)",
+     "type": "html_links",
+     "url": "https://www.birdlife.org/news/",
+     "link_pattern": r"birdlife\.org/news/20\d\d/",
+     "exclude_pattern": r"^$"},
+
+    # ── Friends of the Earth EU ───────────────────────────
+    {"name": "Friends of the Earth EU",
+     "type": "html_links",
+     "url": "https://friendsoftheearth.eu/media-centre/",
+     "link_pattern": r"friendsoftheearth\.eu/press-release/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Stop Financing Factory Farming ────────────────────
+    {"name": "Stop Financing Factory Farming (INT)",
+     "type": "html_links",
+     "url": "https://stopfinancingfactoryfarming.com/news",
+     "link_pattern": r"stopfinancingfactoryfarming\.com/news/[a-z0-9-]{5,}",
+     "exclude_pattern": r"/category/"},
+
+    # ── DeSmog ───────────────────────────────────────────
+    {"name": "DeSmog Agriculture (EN)",
+     "type": "html_links",
+     "url": "https://www.desmog.com/topic/agriculture/",
+     "link_pattern": r"desmog\.com/20\d\d/[0-9]{2}/[0-9]{2}/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Unearthed Greenpeace ──────────────────────────────
+    {"name": "Unearthed (Greenpeace, EN)",
+     "type": "html_links",
+     "url": "https://unearthed.greenpeace.org/",
+     "link_pattern": r"unearthed\.greenpeace\.org/20\d\d/[0-9]{2}/[0-9]{2}/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── World Animal Protection ───────────────────────────
+    {"name": "World Animal Protection (INT)",
+     "type": "html_links",
+     "url": "https://www.worldanimalprotection.org/latest/news/",
+     "link_pattern": r"worldanimalprotection\.org/latest/news/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Four Paws ─────────────────────────────────────────
+    {"name": "Four Paws (INT)",
+     "type": "html_links",
+     "url": "https://www.four-paws.org/press",
+     "link_pattern": r"four-paws\.org/our-stories/press-releases/[a-z0-9/-]{5,}",
+     "exclude_pattern": r"^$"},
+
     # ── CIWF (meerdere landen) ────────────────────────────
     {"name": "CIWF UK",
      "type": "html_a_title",
