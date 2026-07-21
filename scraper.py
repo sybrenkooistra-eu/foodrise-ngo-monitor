@@ -212,9 +212,8 @@ SOURCES = [
      "exclude_pattern": r"^$"},
     # ── Project Slingshot ─────────────────────────────────
     {"name": "Project Slingshot (UK)",
-     "type": "html_a_title",
-     "url": "https://projectslingshot.com/category/campaigns/",
-     "link_sel": ".container a.group[href*='projectslingshot.com']:not([href*='sign-up']):not([href*='donate'])"},
+     "type": "rss",
+     "url": "https://www.google.com/alerts/feeds/07615872391047467014/524339206574596607"},
 
     # ── CAFF ──────────────────────────────────────────────
     {"name": "CAFF (UK)",
