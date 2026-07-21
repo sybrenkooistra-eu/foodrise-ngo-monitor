@@ -645,7 +645,7 @@ def parse_summary(raw):
 
 # ── HTML nieuwsbrief ──────────────────────────────────────────────────────────
 
-def build_html(items_by_source, week, opinion_html=""):
+def build_html(items_by_source, week, opinion_html="", source_stats=None):
     total = sum(len(v) for v in items_by_source.values())
 
     def tag(text, bg, fg):
@@ -728,8 +728,45 @@ def build_html(items_by_source, week, opinion_html=""):
             padding-top:14px;margin-top:28px">
     FoodRise NGO Monitor · automatisch gegenereerd
   </p>
+  STATS_TABLE_PLACEHOLDER
 </body>
 </html>"""
+
+    # ── Statustabel ───────────────────────────────────────────────────────────
+    if source_stats:
+        rows = ""
+        for name, total, fresh, error in source_stats:
+            if error:
+                kleur = "#C0492F"; status = "&#9888; fout"
+            elif total == 0:
+                kleur = "#E8703A"; status = "0 gevonden"
+            elif fresh == 0:
+                kleur = "#888"; status = "geen nieuw"
+            else:
+                kleur = "#1C4332"; status = f"{fresh} nieuw"
+            rows += (
+                f'<tr>'
+                f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee">{name}</td>'
+                f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee;text-align:center">{total}</td>'
+                f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee;text-align:center;color:{kleur};font-weight:700">{status}</td>'
+                f'</tr>'
+            )
+        stats_html = (
+            '<div style="margin-top:40px;border-top:1px solid #ddd;padding-top:20px">'
+            '<p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:8px">Bronstatus deze run</p>'
+            '<table style="width:100%;border-collapse:collapse;font-family:sans-serif">'
+            '<thead><tr style="background:#f5f5f5">'
+            '<th style="padding:4px 10px;font-size:11px;text-align:left;color:#888">Bron</th>'
+            '<th style="padding:4px 10px;font-size:11px;text-align:center;color:#888">Gevonden</th>'
+            '<th style="padding:4px 10px;font-size:11px;text-align:center;color:#888">Status</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+        )
+    else:
+        stats_html = ""
+
+    html = html.replace("  STATS_TABLE_PLACEHOLDER", stats_html)
+    return html
+
 
 # ── Mail ──────────────────────────────────────────────────────────────────────
 
@@ -922,11 +959,20 @@ def main():
 
     items_by_source = {}
     new_seen = set()
+    source_stats = []  # (naam, totaal, nieuw, fout)
 
     for source in SOURCES:
         print(f"  {source['name']} …", end=" ", flush=True)
-        all_items = scrape(source)
+        try:
+            all_items = scrape(source)
+            error = False
+        except Exception as e:
+            print(f"⚠ fout: {e}")
+            source_stats.append((source["name"], 0, 0, True))
+            continue
+
         fresh = [i for i in all_items if i["id"] not in seen]
+        source_stats.append((source["name"], len(all_items), len(fresh), False))
 
         if not fresh:
             print("geen nieuw")
@@ -961,7 +1007,7 @@ def main():
     selected_opinion = select_opinion(client, opinion_candidates)
     opinion_html = build_opinion_section(selected_opinion)
 
-    html    = build_html(items_by_source, week, opinion_html)
+    html    = build_html(items_by_source, week, opinion_html, source_stats)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
     print("Klaar.")
