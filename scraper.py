@@ -812,7 +812,7 @@ def scrape_opinion_source(source):
             link = e.get("link", "")
             title = e.get("title", "").strip()
             if link and title:
-                items.append({"source": source["name"], "title": title, "link": link})
+                items.append({"id": uid(link), "source": source["name"], "title": title, "link": link})
 
     elif t == "html_links":
         try:
@@ -1001,10 +1001,16 @@ def main():
     opinion_candidates = []
     for src in OPINION_SOURCES:
         items = scrape_opinion_source(src)
-        print(f"  {src['name']}: {len(items)} kandidaten")
-        opinion_candidates.extend(items)
-    print(f"  Totaal {len(opinion_candidates)} kandidaten → top 5 selecteren …")
+        # Filter al eerder getoonde opinie-items
+        fresh = [i for i in items if i["id"] not in seen and i["id"] not in new_seen]
+        print(f"  {src['name']}: {len(fresh)} kandidaten ({len(items)} totaal)")
+        opinion_candidates.extend(fresh)
+    print(f"  Totaal {len(opinion_candidates)} nieuwe kandidaten → top 5 selecteren …")
     selected_opinion = select_opinion(client, opinion_candidates)
+    # Voeg getoonde opinie-items toe aan seen
+    for item in selected_opinion:
+        if item.get("link"):
+            new_seen.add(uid(item["link"]))
     opinion_html = build_opinion_section(selected_opinion)
 
     html    = build_html(items_by_source, week, opinion_html, source_stats)
