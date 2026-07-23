@@ -29,6 +29,13 @@ from pathlib import Path
 SEEN_FILE = Path("seen_items.json")
 
 OPINION_SOURCES = [
+    {"name": "Grilled Media (EN)",
+     "type": "html_links",
+     "url": "https://www.grilled.media/",
+     "link_pattern": r"grilled\.media/[a-z0-9-]{5,}/?$",
+     "exclude_pattern": r"/(about|contact|subscribe|newsletter|tag|category|author|page)/?$"},
+
+
     # ── Opinie & Analyse — websites ───────────────────────────────────────────
     {"name": "MO* (BE)",
      "type": "html_links",
@@ -944,7 +951,7 @@ def build_opinion_section(articles):
                  text-transform:uppercase;color:#1C4332;
                  border-bottom:2px solid #E8703A;
                  padding-bottom:5px;margin-bottom:14px">
-        Opinie &amp; Analyse — 5 geselecteerde stukken
+        Analyse &amp; Achtergrond — 5 geselecteerde stukken
       </h2>
       {cards}
     </div>"""
