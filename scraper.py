@@ -35,6 +35,12 @@ OPINION_SOURCES = [
      "link_pattern": r"grilled\.media/[a-z0-9-]{5,}/?$",
      "exclude_pattern": r"/(about|contact|subscribe|newsletter|tag|category|author|page)/?$"},
 
+    {"name": "Lighthouse Reports (EN)",
+     "type": "html_links",
+     "url": "https://www.lighthousereports.com/investigations/",
+     "link_pattern": r"lighthousereports\.com/investigation/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
 
     # ── Opinie & Analyse — websites ───────────────────────────────────────────
     {"name": "MO* (BE)",
