@@ -115,6 +115,18 @@ OPINION_SOURCES = [
                          r"subscribe|membership|foodandfarm|inside-iowa|sustainable-agriculture|"
                          r"what-is|explainer|resource)"},
 
+    {"name": "Freedom Food Alliance (EN)",
+     "type": "html_links",
+     "url": "https://www.freedomfoodalliance.org/unfork-food-system",
+     "link_pattern": r"freedomfoodalliance\.org/unfork-the-food-system/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    {"name": "Bond Beter Leefmilieu (BE)",
+     "type": "html_links",
+     "url": "https://www.bondbeterleefmilieu.be/nieuws",
+     "link_pattern": r"bondbeterleefmilieu\.be/artikel/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
     {"name": "Critical Takes (EN)",
      "type": "html_links",
      "url": "https://criticaltakes.org/society-and-nature/",
@@ -309,6 +321,41 @@ SOURCES = [
      "type": "html_links",
      "url": "https://www.four-paws.org/press",
      "link_pattern": r"four-paws\.org/our-stories/press-releases/[a-z0-9/-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Rainforest Action Network ─────────────────────────
+    {"name": "Rainforest Action Network (EN)",
+     "type": "html_links",
+     "url": "https://www.ran.org/media-center/",
+     "link_pattern": r"ran\.org/press-releases/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Sinergia Animal ────────────────────────────────────
+    {"name": "Sinergia Animal (EN)",
+     "type": "html_links",
+     "url": "https://www.media.sinergiaanimal.org/press-releases",
+     "link_pattern": r"sinergiaanimal\.org/post/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── Deutsche Umwelthilfe ───────────────────────────────
+    {"name": "Deutsche Umwelthilfe (DE)",
+     "type": "html_links",
+     "url": "https://www.duh.de/presse/pressemitteilungen/",
+     "link_pattern": r"duh\.de/presse/pressemitteilungen/pressemitteilung/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
+    # ── IPES Food ──────────────────────────────────────────
+    {"name": "IPES Food (INT)",
+     "type": "html_links",
+     "url": "https://ipes-food.org/media-and-press/",
+     "link_pattern": r"ipes-food\.org/[a-z0-9-]{5,}/?$",
+     "exclude_pattern": r"/(media-and-press|report|about|contact|team|subscribe)/?$"},
+
+    # ── Greenpeace Italia ──────────────────────────────────
+    {"name": "Greenpeace Italia (IT)",
+     "type": "html_links",
+     "url": "https://www.greenpeace.org/italy/rapporto/",
+     "link_pattern": r"greenpeace\.org/italy/rapporto/\d+/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
     # ── CIWF (meerdere landen) ────────────────────────────
