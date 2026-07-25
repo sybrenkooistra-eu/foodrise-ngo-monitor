@@ -358,6 +358,20 @@ SOURCES = [
      "link_pattern": r"greenpeace\.org/italy/rapporto/\d+/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
+    # ── Food & Power ──────────────────────────────────────
+    {"name": "Food & Power (EN)",
+     "type": "html_links",
+     "url": "https://www.foodandpower.net/latest",
+     "link_pattern": r"foodandpower\.net/latest/[a-z0-9-]{5,}",
+     "exclude_pattern": r"(/category/|\?author)"},
+
+    # ── The Fern ───────────────────────────────────────────
+    {"name": "The Fern (EN)",
+     "type": "html_links",
+     "url": "https://thefern.org/category/international/",
+     "link_pattern": r"thefern\.org/20\d\d/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
     # ── CIWF (meerdere landen) ────────────────────────────
     {"name": "CIWF UK",
      "type": "html_a_title",
