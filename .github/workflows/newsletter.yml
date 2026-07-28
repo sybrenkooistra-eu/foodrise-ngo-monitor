@@ -2,12 +2,14 @@ name: FoodRise Newsletter
 
 on:
   schedule:
-    - cron: "30 5 * * 2"
+    - cron: "0 4 * * 2"
   workflow_dispatch:
 
 jobs:
   send-newsletter:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
