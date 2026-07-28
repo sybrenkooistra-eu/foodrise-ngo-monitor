@@ -1076,7 +1076,7 @@ def main():
     for src in OPINION_SOURCES:
         items = scrape_opinion_source(src)
         # Filter al eerder getoonde opinie-items
-        fresh = [i for i in items if i["id"] not in seen and i["id"] not in new_seen]
+        fresh = [i for i in items if i.get("id") and i["id"] not in seen and i["id"] not in new_seen]
         print(f"  {src['name']}: {len(fresh)} kandidaten ({len(items)} totaal)")
         opinion_candidates.extend(fresh)
     print(f"  Totaal {len(opinion_candidates)} nieuwe kandidaten → top 5 selecteren …")
