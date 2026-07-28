@@ -372,6 +372,13 @@ SOURCES = [
      "link_pattern": r"thefern\.org/20\d\d/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
+    # ── ETC Group ─────────────────────────────────────────
+    {"name": "ETC Group (INT)",
+     "type": "html_links",
+     "url": "https://www.etcgroup.org/news",
+     "link_pattern": r"etcgroup\.org/content/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
     # ── CIWF (meerdere landen) ────────────────────────────
     {"name": "CIWF UK",
      "type": "html_a_title",
@@ -468,12 +475,20 @@ def scrape_rss(source):
         title = e.get("title", "").strip()
         if not link or not title:
             continue
+        # Datum ophalen
+        published = e.get("published_parsed") or e.get("updated_parsed")
+        if published:
+            from time import strftime, mktime
+            date_str = strftime("%-d %b %Y", published)
+        else:
+            date_str = ""
         items.append({
             "id": uid(link),
             "source": source["name"],
             "title": title,
             "link": link,
             "snippet": get_snippet(e),
+            "date": date_str,
         })
     return items
 
@@ -720,7 +735,17 @@ def parse_summary(raw):
 # ── HTML nieuwsbrief ──────────────────────────────────────────────────────────
 
 def build_html(items_by_source, week, opinion_html="", source_stats=None):
-    total = sum(len(v) for v in items_by_source.values())
+    # Verzamel alle items en sorteer op relevantie
+    all_items = []
+    for source_name, items in items_by_source.items():
+        for item in items:
+            item["_source"] = source_name
+            all_items.append(item)
+
+    hoog   = [i for i in all_items if parse_summary(i["summary"])["relevance"] == "hoog"]
+    midden = [i for i in all_items if parse_summary(i["summary"])["relevance"] == "midden"]
+    laag   = [i for i in all_items if parse_summary(i["summary"])["relevance"] == "laag"]
+    total  = len(all_items)
 
     def tag(text, bg, fg):
         return (f'<span style="background:{bg};color:{fg};padding:2px 9px;'
@@ -740,21 +765,23 @@ def build_html(items_by_source, week, opinion_html="", source_stats=None):
                 f'border-radius:20px;font-size:11px;font-weight:700;'
                 f'margin-right:6px;letter-spacing:.3px">{label}</span>')
 
-    sections = ""
-    for source_name, items in items_by_source.items():
-        cards = ""
-        for item in items:
-            p = parse_summary(item["summary"])
-            tags_html = (
-                relevance_badge(p["relevance"]) +
-                "".join(tag(t, "#9FE870", "#1C4332") for t in p["types"]) +
-                "".join(tag(t, "#E8703A", "#fff")    for t in p["topics"])
-            )
-            border_color = {"hoog": "#9FE870", "midden": "#FCE9B8", "laag": "#ddd"}.get(p["relevance"], "#9FE870")
-            cards += f"""
+    def render_item(item):
+        p = parse_summary(item["summary"])
+        source_name = item.get("_source", "")
+        date_str = item.get("date", "")
+        date_html = f'<span style="font-size:11px;color:#999;margin-left:6px">{date_str}</span>' if date_str else ""
+        border_color = {"hoog": "#9FE870", "midden": "#FCE9B8", "laag": "#ddd"}.get(p["relevance"], "#9FE870")
+        tags_html = (
+            relevance_badge(p["relevance"]) +
+            "".join(tag(t, "#9FE870", "#1C4332") for t in p["types"]) +
+            "".join(tag(t, "#E8703A", "#fff")    for t in p["topics"])
+        )
+        return f"""
             <div style="border-left:3px solid {border_color};padding:10px 16px;
                         margin-bottom:18px;background:#fafafa">
-              <div style="margin-bottom:7px">{tags_html}</div>
+              <div style="margin-bottom:5px">{tags_html}</div>
+              <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;
+                          letter-spacing:.5px;margin-bottom:4px">{source_name}{date_html}</div>
               <p style="margin:0 0 5px;font-weight:600;font-size:15px;
                         color:#1C4332;line-height:1.3">
                 <a href="{item['link']}" style="color:#1C4332;text-decoration:none">
@@ -764,55 +791,38 @@ def build_html(items_by_source, week, opinion_html="", source_stats=None):
               <p style="margin:0 0 6px;font-size:14px;color:#333;line-height:1.5">
                 {p['body']}
               </p>
-              <a href="{item['link']}"
-                 style="font-size:12px;color:#E8703A;text-decoration:none">
+              <a href="{item['link']}" style="font-size:12px;color:#E8703A;text-decoration:none">
                 → lees verder
               </a>
             </div>"""
 
-        sections += f"""
-        <div style="margin-bottom:32px">
+    def render_section(title, items, border="#9FE870"):
+        if not items:
+            return ""
+        cards = "".join(render_item(i) for i in items)
+        return f"""
+        <div style="margin-bottom:36px">
           <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
                      text-transform:uppercase;color:#1C4332;
-                     border-bottom:2px solid #9FE870;
-                     padding-bottom:5px;margin-bottom:14px">
-            {source_name}
-          </h2>
+                     border-bottom:2px solid {border};
+                     padding-bottom:5px;margin-bottom:14px">{title}</h2>
           {cards}
         </div>"""
 
-    return f"""<!DOCTYPE html>
-<html lang="nl">
-<head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-             max-width:660px;margin:0 auto;padding:20px;background:#fff;color:#222">
-  <div style="background:#1C4332;padding:22px 26px;border-radius:6px;margin-bottom:28px">
-    <h1 style="color:#9FE870;margin:0 0 4px;font-size:20px;font-weight:700">
-      FoodRise NGO Monitor
-    </h1>
-    <p style="color:#c8e6c9;margin:0;font-size:13px">
-      Week van {week} &nbsp;·&nbsp;
-      {total} nieuwe items uit {len(items_by_source)} bronnen
-    </p>
-  </div>
-  {sections if sections else '<p style="color:#888">Geen nieuwe items deze week.</p>'}
-  {opinion_html}
-  <p style="color:#bbb;font-size:11px;border-top:1px solid #eee;
-            padding-top:14px;margin-top:28px">
-    FoodRise NGO Monitor · automatisch gegenereerd
-  </p>
-  STATS_TABLE_PLACEHOLDER
-</body>
-</html>"""
+    sections = (
+        render_section(f"Relevant — Hoog ({len(hoog)} items)", hoog, "#9FE870") +
+        render_section(f"Relevant — Midden ({len(midden)} items)", midden, "#FCE9B8") +
+        opinion_html +
+        render_section(f"Overig — Laag ({len(laag)} items)", laag, "#ddd")
+    )
 
     # ── Statustabel ───────────────────────────────────────────────────────────
     if source_stats:
         rows = ""
-        for name, total, fresh, error in source_stats:
+        for name, tot, fresh, error in source_stats:
             if error:
                 kleur = "#C0492F"; status = "&#9888; fout"
-            elif total == 0:
+            elif tot == 0:
                 kleur = "#E8703A"; status = "0 gevonden"
             elif fresh == 0:
                 kleur = "#888"; status = "geen nieuw"
@@ -821,7 +831,7 @@ def build_html(items_by_source, week, opinion_html="", source_stats=None):
             rows += (
                 f'<tr>'
                 f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee">{name}</td>'
-                f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee;text-align:center">{total}</td>'
+                f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee;text-align:center">{tot}</td>'
                 f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee;text-align:center;color:{kleur};font-weight:700">{status}</td>'
                 f'</tr>'
             )
@@ -838,9 +848,28 @@ def build_html(items_by_source, week, opinion_html="", source_stats=None):
     else:
         stats_html = ""
 
-    html = html.replace("  STATS_TABLE_PLACEHOLDER", stats_html)
-    return html
-
+    return f"""<!DOCTYPE html>
+<html lang="nl">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+             max-width:660px;margin:0 auto;padding:20px;background:#fff;color:#222">
+  <div style="background:#1C4332;padding:22px 26px;border-radius:6px;margin-bottom:28px">
+    <h1 style="color:#9FE870;margin:0 0 4px;font-size:20px;font-weight:700">
+      FoodRise NGO Monitor
+    </h1>
+    <p style="color:#c8e6c9;margin:0;font-size:13px">
+      Week van {week} &nbsp;·&nbsp; {total} nieuwe items
+    </p>
+  </div>
+  {sections if sections else '<p style="color:#888">Geen nieuwe items deze week.</p>'}
+  <p style="color:#bbb;font-size:11px;border-top:1px solid #eee;
+            padding-top:14px;margin-top:28px">
+    FoodRise NGO Monitor · automatisch gegenereerd
+  </p>
+  {stats_html}
+</body>
+</html>"""
 
 # ── Mail ──────────────────────────────────────────────────────────────────────
 
