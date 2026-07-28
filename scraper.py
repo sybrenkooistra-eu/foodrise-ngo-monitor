@@ -414,7 +414,7 @@ Gebruik dit exacte formaat — geen extra tekst ervoor of erna:
 Type: [één of twee van: rapport | campagne | rechtszaak | beleidsdruk | greenwashing | onderzoek | reactie | anders]
 Onderwerp: [één of twee van: methaan | scope3 | kweekvis | ontbossing | subsidies | veehouderij | aquafeed | lobby | financiering | anders]
 Relevantie: [hoog | midden | laag] — hoog = direct bruikbaar voor FoodRise campagnes (FrieslandCampina/Vion/Nutreco, methaan, kweekvis, Scope 3, EU-beleid); midden = relevante sector maar geen directe link met FoodRise's doelwitten/thema's; laag = raakt het onderwerp slechts zijdelings
-Samenvatting: [2-3 zinnen: wat is het concreet, wie doet het, waarom relevant voor FoodRise]"""
+Samenvatting: [bij hoog/midden: 2 zinnen wat het concreet is en wie het doet; bij laag: 1 zin wat het is. Geen toelichting over relevantie voor FoodRise.]"""
 
 # ── Hulpfuncties ──────────────────────────────────────────────────────────────
 
