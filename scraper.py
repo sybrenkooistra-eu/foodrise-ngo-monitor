@@ -264,8 +264,8 @@ SOURCES = [
     {"name": "Vegetarisk (DK)",
      "type": "html_links",
      "url": "https://vegetarisk.dk/nyheder/",
-     "link_pattern": r"vegetarisk\.dk/[a-z0-9-]{5,}",
-     "exclude_pattern": r"/(nyheder|soeger|kollega|telefundraiser|bliv|stillinger|jobs?)/?$"},
+     "link_pattern": r"vegetarisk\.dk/[a-z0-9-]{15,}/?$",
+     "exclude_pattern": r"/(nyheder|soeger|kollega|telefundraiser|bliv|stillinger|job|vores|om-os|kontakt|presse|english|privat)/?$"},
 
     # ── The Protein Project ───────────────────────────────
     {"name": "The Protein Project (EU)",
@@ -306,8 +306,8 @@ SOURCES = [
     {"name": "Unearthed (Greenpeace, EN)",
      "type": "html_links",
      "url": "https://unearthed.greenpeace.org/",
-     "link_pattern": r"unearthed\.greenpeace\.org/20\d\d/[0-9]{2}/[0-9]{2}/[a-z0-9-]{5,}",
-     "exclude_pattern": r"^$"},
+     "link_pattern": r"unearthed\.greenpeace\.org/20\d\d/[0-9]{2}/[0-9]{2}/[a-z0-9-]{10,}/?$",
+     "exclude_pattern": r"/(category|tag|author|page|about|contact)"},
 
     # ── World Animal Protection ───────────────────────────
     {"name": "World Animal Protection (INT)",
@@ -906,7 +906,7 @@ def scrape_opinion_source(source):
                 title = a.get_text(strip=True)[:120]
                 if len(title) > 8:
                     seen.add(full)
-                    items.append({"source": source["name"], "title": title, "link": full})
+                    items.append({"id": uid(full), "source": source["name"], "title": title, "link": full})
 
     return items[:20]
 
