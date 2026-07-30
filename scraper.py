@@ -379,6 +379,13 @@ SOURCES = [
      "link_pattern": r"etcgroup\.org/content/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
+    # ── Seas at Risk ──────────────────────────────────────
+    {"name": "Seas at Risk (EU)",
+     "type": "html_links",
+     "url": "https://seas-at-risk.org/news/",
+     "link_pattern": r"seas-at-risk\.org/(general-news|press-releases)/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
+
     # ── CIWF (meerdere landen) ────────────────────────────
     {"name": "CIWF UK",
      "type": "html_a_title",
