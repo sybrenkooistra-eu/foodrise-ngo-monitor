@@ -1064,6 +1064,29 @@ def main():
     new_seen = set()
     source_stats = []  # (naam, totaal, nieuw, fout)
 
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(days=14)
+
+    def is_recent(item):
+        if item.get("date"):
+            try:
+                for fmt in ["%-d %b %Y", "%d %b %Y"]:
+                    try:
+                        return datetime.strptime(item["date"], fmt) >= cutoff
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+        url = item.get("link", "")
+        m = re.search(r"/(20[0-9]{2})/([0-9]{2})/", url)
+        if m:
+            try:
+                item_date = datetime(int(m.group(1)), int(m.group(2)), 1)
+                return item_date >= cutoff.replace(day=1)
+            except Exception:
+                pass
+        return True
+
     for source in SOURCES:
         print(f"  {source['name']} …", end=" ", flush=True)
         try:
@@ -1074,7 +1097,7 @@ def main():
             source_stats.append((source["name"], 0, 0, True))
             continue
 
-        fresh = [i for i in all_items if i["id"] not in seen]
+        fresh = [i for i in all_items if i["id"] not in seen and is_recent(i)]
         source_stats.append((source["name"], len(all_items), len(fresh), False))
 
         if not fresh:
@@ -1105,7 +1128,7 @@ def main():
     for src in OPINION_SOURCES:
         items = scrape_opinion_source(src)
         # Filter al eerder getoonde opinie-items
-        fresh = [i for i in items if i.get("id") and i["id"] not in seen and i["id"] not in new_seen]
+        fresh = [i for i in items if i.get("id") and i["id"] not in seen and i["id"] not in new_seen and is_recent(i)]
         print(f"  {src['name']}: {len(fresh)} kandidaten ({len(items)} totaal)")
         opinion_candidates.extend(fresh)
     print(f"  Totaal {len(opinion_candidates)} nieuwe kandidaten → top 5 selecteren …")
