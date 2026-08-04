@@ -16,7 +16,7 @@ import hashlib
 import smtplib
 import feedparser
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
@@ -1071,7 +1071,6 @@ def main():
     new_seen = set()
     source_stats = []  # (naam, totaal, nieuw, fout)
 
-    from datetime import datetime, timedelta
     cutoff = datetime.now() - timedelta(days=14)
 
     def is_recent(item):
