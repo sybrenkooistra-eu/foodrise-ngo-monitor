@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 feedparser anthropic
+        run: pip install requests beautifulsoup4 feedparser anthropic cloudscraper
 
       - name: Restore seen_items cache
         uses: actions/cache@v4

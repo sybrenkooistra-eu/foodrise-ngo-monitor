@@ -16,6 +16,11 @@ import hashlib
 import smtplib
 import feedparser
 import requests
+try:
+    import cloudscraper as _cloudscraper
+    _cs = _cloudscraper.create_scraper()
+except ImportError:
+    _cs = None
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -119,12 +124,6 @@ OPINION_SOURCES = [
      "type": "html_links",
      "url": "https://www.freedomfoodalliance.org/unfork-food-system",
      "link_pattern": r"freedomfoodalliance\.org/unfork-the-food-system/[a-z0-9-]{5,}",
-     "exclude_pattern": r"^$"},
-
-    {"name": "Bond Beter Leefmilieu (BE)",
-     "type": "html_links",
-     "url": "https://www.bondbeterleefmilieu.be/nieuws",
-     "link_pattern": r"bondbeterleefmilieu\.be/artikel/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
     {"name": "Critical Takes (EN)",
@@ -231,10 +230,8 @@ SOURCES = [
      "link_sel": None},
 
     {"name": "Food Foundation",
-     "type": "html_links",
-     "url": "https://foodfoundation.org.uk/press-area",
-     "link_pattern": r"foodfoundation\.org\.uk/press-release/[a-z0-9-]{5,}",
-     "exclude_pattern": r"^$"},
+     "type": "rss",
+     "url": "https://foodfoundation.org.uk/feed/"},
     # ── Project Slingshot ─────────────────────────────────
     {"name": "Project Slingshot (UK)",
      "type": "rss",
@@ -242,9 +239,10 @@ SOURCES = [
 
     # ── CAFF ──────────────────────────────────────────────
     {"name": "CAFF (UK)",
-     "type": "html_a_img_alt",
+     "type": "html_links",
      "url": "https://www.caff.org.uk/press",
-     "link_sel": ".blog-basic-grid--container a.image-wrapper[href*='/press/']"},
+     "link_pattern": r"caff\.org\.uk/press/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
 
     # ── ProVeg ────────────────────────────────────────────
     {"name": "ProVeg (INT)",
@@ -367,9 +365,9 @@ SOURCES = [
 
     # ── The Fern ───────────────────────────────────────────
     {"name": "The Fern (EN)",
-     "type": "html_links",
+     "type": "cloudscraper",
      "url": "https://thefern.org/category/international/",
-     "link_pattern": r"thefern\.org/20\d\d/[a-z0-9-]{5,}",
+     "link_pattern": r"thefern\.org/20[0-9]{2}/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
     # ── ETC Group ─────────────────────────────────────────
@@ -386,26 +384,30 @@ SOURCES = [
      "link_pattern": r"seas-at-risk\.org/(general-news|press-releases)/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
-    # ── CIWF (meerdere landen) ────────────────────────────
+    # ── CIWF ──────────────────────────────────────────────
     {"name": "CIWF UK",
-     "type": "html_a_title",
-     "url": "https://www.ciwf.org/media-and-news/press-releases-and-media-statements/",
-     "link_sel": "div.container-small div.row a[title]"},
+     "type": "html_links",
+     "url": "https://www.ciwf.org/media-and-news/latest-news/",
+     "link_pattern": r"ciwf\.org/media-and-news/latest-news/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
 
     {"name": "CIWF EU",
-     "type": "html_a_title",
-     "url": "https://www.ciwf.eu/media-and-news/press-releases/",
-     "link_sel": "div.container-small div.row a[title]"},
+     "type": "html_links",
+     "url": "https://www.ciwf.eu/media-and-news/news/",
+     "link_pattern": r"ciwf\.eu/media-and-news/news/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
 
     {"name": "CIWF FR",
-     "type": "html_a_title",
-     "url": "https://www.ciwf.fr/actualites-et-publications/communiques-de-presse/",
-     "link_sel": "div.container-small div.row a[title]"},
+     "type": "html_links",
+     "url": "https://www.ciwf.fr/actualites-et-publications/actualites/",
+     "link_pattern": r"ciwf\.fr/actualites-et-publications/actualites/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
 
     {"name": "CIWF IT",
-     "type": "html_a_title",
-     "url": "https://www.ciwf.it/area-stampa/comunicati-stampa/",
-     "link_sel": "div.container-small div.row a[title]"},
+     "type": "html_links",
+     "url": "https://www.ciwf.it/news/",
+     "link_pattern": r"ciwf\.it/news/[a-z0-9-]{5,}",
+     "exclude_pattern": r"^$"},
 
 ]
 
@@ -469,6 +471,12 @@ def get_snippet(entry):
 
 def fetch(url, timeout=15):
     return requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+
+def fetch_cs(url, timeout=15):
+    """Fetch via cloudscraper voor Cloudflare-beschermde sites."""
+    if _cs:
+        return _cs.get(url, timeout=timeout)
+    return fetch(url, timeout=timeout)
 
 # ── Scrapers per type ─────────────────────────────────────────────────────────
 
@@ -687,6 +695,36 @@ def scrape_html_a_img_alt(source):
     return items
 
 
+def scrape_cloudscraper(source):
+    """Scrape via cloudscraper voor Cloudflare-beschermde sites."""
+    import re as _re
+    from urllib.parse import urlparse as _up
+    try:
+        r = fetch_cs(source["url"], timeout=source.get("timeout", 20))
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  ⚠ {source['name']}: {e}")
+        return []
+    soup = BeautifulSoup(r.text, "html.parser")
+    inc = _re.compile(source["link_pattern"])
+    exc = _re.compile(source.get("exclude_pattern", "^$"))
+    p = _up(source["url"])
+    base = f"{p.scheme}://{p.netloc}"
+    seen = set()
+    items = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        full = href if href.startswith("http") else base + href
+        if full in seen: continue
+        if inc.search(full) and not exc.search(full):
+            title = a.get_text(strip=True)[:120]
+            if len(title) > 8:
+                seen.add(full)
+                items.append({"id": uid(full), "source": source["name"],
+                              "title": title, "link": full, "snippet": ""})
+    return items
+
+
 def scrape(source):
     t = source["type"]
     if t == "rss":
@@ -701,6 +739,8 @@ def scrape(source):
         return scrape_html_a_title(source)
     elif t == "html_a_img_alt":
         return scrape_html_a_img_alt(source)
+    elif t == "cloudscraper":
+        return scrape_cloudscraper(source)
     return []
 
 # ── AI samenvatting ───────────────────────────────────────────────────────────
@@ -1139,10 +1179,10 @@ def main():
         opinion_candidates.extend(fresh)
     print(f"  Totaal {len(opinion_candidates)} nieuwe kandidaten → top 5 selecteren …")
     selected_opinion = select_opinion(client, opinion_candidates)
-    # Voeg getoonde opinie-items toe aan seen
-    for item in selected_opinion:
-        if item.get("link"):
-            new_seen.add(uid(item["link"]))
+    # Sla ALLE kandidaten op in seen (niet alleen top 5)
+    for item in opinion_candidates:
+        if item.get("id"):
+            new_seen.add(item["id"])
     opinion_html = build_opinion_section(selected_opinion)
 
     html    = build_html(items_by_source, week, opinion_html, source_stats)
