@@ -787,7 +787,8 @@ def parse_summary(raw):
 NIEUWE_OOGST_TOPICS = [
     {"label": "Biomethaan & vergisting",
      "keywords": ["biomethaan", "biogasopwaardering", "groen gas", "biogas",
-                  "mestvergisting", "monovergister", "vergister", "vergisting"]},
+                  "mestvergisting", "mestvergister", "monovergister",
+                  "vergister", "vergisting", "biobased mest"]},
     {"label": "Nutreco / Trouw Nutrition",
      "keywords": ["nutreco", "trouw nutrition", "trouw"]},
     {"label": "FrieslandCampina",
