@@ -781,7 +781,154 @@ def parse_summary(raw):
 
 # ── HTML nieuwsbrief ──────────────────────────────────────────────────────────
 
-def build_html(items_by_source, week, opinion_html="", source_stats=None):
+
+# ── Nieuwe Oogst industrie monitor ───────────────────────────────────────────
+
+NIEUWE_OOGST_TOPICS = [
+    {"label": "Biomethaan & vergisting",
+     "keywords": ["biomethaan", "biogasopwaardering", "groen gas", "biogas",
+                  "mestvergisting", "monovergister", "vergister", "vergisting"]},
+    {"label": "Nutreco / Trouw Nutrition",
+     "keywords": ["nutreco", "trouw nutrition", "trouw"]},
+    {"label": "FrieslandCampina",
+     "keywords": ["frieslandcampina"]},
+    {"label": "Vion",
+     "keywords": ["vion"]},
+    {"label": "Kabinet & bewindspersonen",
+     "keywords": ["kabinet", "erkens", "minister", "staatssecretaris"]},
+]
+
+def scrape_nieuwe_oogst(max_pages=6):
+    """Scrape Nieuwe Oogst (meerdere pagina's) en filter op industrietrefwoorden."""
+    import re as _re
+
+    cutoff_no = datetime.now() - timedelta(days=8)
+    articles = []
+    seen = set()
+    stop = False
+
+    def parse_page(html):
+        """Parse artikelen uit HTML, geeft (articles, laatste_id, alles_te_oud) terug."""
+        nonlocal stop
+        soup = BeautifulSoup(html, "html.parser")
+        found = []
+        last_id = None
+        for div in soup.find_all("div", attrs={"data-id": True}):
+            last_id = div.get("data-id")
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+            if not _re.search(r"/nieuws/20[0-9]{2}/[0-9]{2}/[0-9]{2}/", href):
+                continue
+            full = href if href.startswith("http") else "https://www.nieuweoogst.nl" + href
+            if full in seen:
+                continue
+            title = a.get_text(strip=True)
+            if not title or len(title) < 8:
+                continue
+            m = _re.search(r"/nieuws/(20[0-9]{2})/([0-9]{2})/([0-9]{2})/", href)
+            if m:
+                try:
+                    item_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                    if item_date < cutoff_no:
+                        stop = True
+                        continue
+                except Exception:
+                    pass
+            seen.add(full)
+            found.append({"title": title, "link": full})
+        return found, last_id
+
+    # Startpagina's: algemeen nieuws + sectorpagina's
+    START_URLS = [
+        "https://www.nieuweoogst.nl/nieuws",
+        "https://www.nieuweoogst.nl/sector/veehouderij",
+        "https://www.nieuweoogst.nl/sector/akker-en-tuinbouw",
+    ]
+
+    for start_url in START_URLS:
+        stop = False
+        try:
+            r = fetch(start_url, timeout=20)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"  ⚠ Nieuwe Oogst ({start_url}): {e}")
+            continue
+
+        found, last_id = parse_page(r.text)
+        articles.extend(found)
+
+        # Volgende pagina's via AJAX-endpoint
+        offset = 49
+        for _ in range(max_pages - 1):
+            if stop or not last_id:
+                break
+            ajax_url = f"https://www.nieuweoogst.nl/data/page-49/articles/section-news/{offset}/last/{last_id}/"
+            try:
+                r2 = fetch(ajax_url, timeout=20)
+                r2.raise_for_status()
+            except Exception:
+                break
+            if len(r2.text.strip()) < 50:
+                break
+            found, new_last = parse_page(r2.text)
+            if not found or new_last == last_id:
+                break
+            articles.extend(found)
+            last_id = new_last
+            offset += 49
+
+    # Filter op trefwoorden
+    results = {}
+    for topic in NIEUWE_OOGST_TOPICS:
+        matches = []
+        for art in articles:
+            tekst = (art["title"] + " " + art["link"]).lower()
+            if any(kw in tekst for kw in topic["keywords"]):
+                matches.append(art)
+        if matches:
+            results[topic["label"]] = matches
+
+    return results
+
+
+def build_nieuwe_oogst_section(results):
+    """Bouw HTML voor de Nieuwe Oogst monitor sectie."""
+    if not results:
+        return ""
+
+    sections = ""
+    for label, items in results.items():
+        cards = ""
+        for art in items:
+            cards += f"""
+            <div style="padding:6px 0;border-bottom:1px solid #f0f0f0">
+              <a href="{art['link']}" style="font-size:14px;color:#1C4332;text-decoration:none;font-weight:500">
+                {art['title']}
+              </a>
+            </div>"""
+        sections += f"""
+        <div style="margin-bottom:20px">
+          <p style="font-size:12px;font-weight:700;text-transform:uppercase;
+                    letter-spacing:.5px;color:#C0492F;margin:0 0 8px">{label}</p>
+          {cards}
+        </div>"""
+
+    return f"""
+    <div style="margin-bottom:36px;border:1px solid #f0d0cc;border-radius:6px;padding:16px 20px">
+      <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                 text-transform:uppercase;color:#C0492F;
+                 border-bottom:2px solid #C0492F;
+                 padding-bottom:5px;margin-bottom:16px">
+        Nieuwe Oogst — industrie monitor
+      </h2>
+      {sections}
+      <p style="font-size:11px;color:#999;margin:12px 0 0">
+        Bron: <a href="https://www.nieuweoogst.nl/nieuws" style="color:#999">nieuweoogst.nl</a>
+        · alleen artikelen van de afgelopen 8 dagen
+      </p>
+    </div>"""
+
+def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", source_stats=None):
     # Verzamel alle items en sorteer op relevantie
     all_items = []
     for source_name, items in items_by_source.items():
@@ -860,6 +1007,7 @@ def build_html(items_by_source, week, opinion_html="", source_stats=None):
         render_section(f"Relevant — Hoog ({len(hoog)} items)", hoog, "#9FE870") +
         render_section(f"Relevant — Midden ({len(midden)} items)", midden, "#FCE9B8") +
         opinion_html +
+        nieuwe_oogst_html +
         render_section(f"Overig — Laag ({len(laag)} items)", laag, "#ddd")
     )
 
@@ -1185,7 +1333,16 @@ def main():
             new_seen.add(item["id"])
     opinion_html = build_opinion_section(selected_opinion)
 
-    html    = build_html(items_by_source, week, opinion_html, source_stats)
+    # Nieuwe Oogst industrie monitor
+    print("\nNieuwe Oogst monitor scrapen …")
+    no_results = scrape_nieuwe_oogst()
+    for label, items in no_results.items():
+        print(f"  {label}: {len(items)} artikel(en)")
+    if not no_results:
+        print("  Geen matches deze week")
+    nieuwe_oogst_html = build_nieuwe_oogst_section(no_results)
+
+    html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, source_stats)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
     print("Klaar.")
