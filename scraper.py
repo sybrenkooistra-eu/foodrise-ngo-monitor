@@ -929,7 +929,108 @@ def build_nieuwe_oogst_section(results):
       </p>
     </div>"""
 
-def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", source_stats=None):
+
+# ── Officiële Bekendmakingen ─────────────────────────────────────────────────
+
+BEKENDMAKINGEN_TERMEN = ["viskwekerij", "kweekzalm"]
+
+def scrape_bekendmakingen(seen, max_per_term=15):
+    """Scrape officielebekendmakingen.nl op zoektermen. Geeft dict {term: [items]}."""
+    results = {}
+    for term in BEKENDMAKINGEN_TERMEN:
+        url = f"https://zoek.officielebekendmakingen.nl/resultaten?zv={term}"
+        try:
+            r = fetch(url, timeout=25)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"  ⚠ Bekendmakingen ({term}): {e}")
+            continue
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        container = soup.select_one("#Publicaties")
+        if not container:
+            continue
+
+        items = []
+        for li in container.select("ul > li"):
+            a = li.select_one("h2.result--title a")
+            if not a:
+                continue
+            href = a.get("href", "")
+            if not href:
+                continue
+            full = href if href.startswith("http") else "https://zoek.officielebekendmakingen.nl/" + href.lstrip("/")
+
+            soort = a.get_text(strip=True)
+            p = li.find("p")
+            omschrijving = p.get_text(strip=True) if p else ""
+            titel = omschrijving or soort
+            if not titel or len(titel) < 5:
+                continue
+
+            item_id = uid(full)
+            if item_id in seen:
+                continue
+
+            items.append({
+                "id": item_id,
+                "title": titel[:160],
+                "soort": soort,
+                "link": full,
+            })
+            if len(items) >= max_per_term:
+                break
+
+        if items:
+            results[term] = items
+
+    return results
+
+
+def build_bekendmakingen_section(results):
+    """Bouw HTML voor de bekendmakingen-sectie."""
+    if not results:
+        return ""
+
+    blokken = ""
+    for term, items in results.items():
+        rijen = ""
+        for it in items:
+            soort = it.get("soort", "")
+            soort_html = (f'<span style="font-size:11px;color:#888;'
+                          f'margin-right:6px">{soort}</span>') if soort else ""
+            rijen += f"""
+            <div style="padding:7px 0;border-bottom:1px solid #f0f0f0">
+              {soort_html}
+              <a href="{it['link']}" style="font-size:14px;color:#1C4332;
+                 text-decoration:none;font-weight:500">{it['title']}</a>
+            </div>"""
+        blokken += f"""
+        <div style="margin-bottom:20px">
+          <p style="font-size:12px;font-weight:700;text-transform:uppercase;
+                    letter-spacing:.5px;color:#1C4332;margin:0 0 8px">
+            Zoekterm: {term}
+          </p>
+          {rijen}
+        </div>"""
+
+    return f"""
+    <div style="margin-bottom:36px;border:1px solid #d6e6d9;border-radius:6px;padding:16px 20px">
+      <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                 text-transform:uppercase;color:#1C4332;
+                 border-bottom:2px solid #9FE870;
+                 padding-bottom:5px;margin-bottom:16px">
+        Officiële bekendmakingen — viskwekerij
+      </h2>
+      {blokken}
+      <p style="font-size:11px;color:#999;margin:12px 0 0">
+        Bron: <a href="https://zoek.officielebekendmakingen.nl"
+        style="color:#999">zoek.officielebekendmakingen.nl</a>
+        · alleen publicaties die niet eerder zijn getoond
+      </p>
+    </div>"""
+
+def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bekendmakingen_html="", source_stats=None):
     # Verzamel alle items en sorteer op relevantie
     all_items = []
     for source_name, items in items_by_source.items():
@@ -1009,6 +1110,7 @@ def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", sou
         render_section(f"Relevant — Midden ({len(midden)} items)", midden, "#FCE9B8") +
         opinion_html +
         nieuwe_oogst_html +
+        bekendmakingen_html +
         render_section(f"Overig — Laag ({len(laag)} items)", laag, "#ddd")
     )
 
@@ -1343,7 +1445,18 @@ def main():
         print("  Geen matches deze week")
     nieuwe_oogst_html = build_nieuwe_oogst_section(no_results)
 
-    html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, source_stats)
+    # Officiële bekendmakingen
+    print("\nOfficiële bekendmakingen scrapen …")
+    bm_results = scrape_bekendmakingen(seen | new_seen)
+    for term, items in bm_results.items():
+        print(f"  {term}: {len(items)} nieuwe publicatie(s)")
+        for it in items:
+            new_seen.add(it["id"])
+    if not bm_results:
+        print("  Geen nieuwe publicaties")
+    bekendmakingen_html = build_bekendmakingen_section(bm_results)
+
+    html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, bekendmakingen_html, source_stats)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
     print("Klaar.")
