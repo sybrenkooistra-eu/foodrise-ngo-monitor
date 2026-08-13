@@ -10,6 +10,7 @@ Vereist omgevingsvariabelen:
 """
 
 import os
+import time
 import re
 import json
 import hashlib
@@ -935,40 +936,61 @@ def build_nieuwe_oogst_section(results):
 BEKENDMAKINGEN_TERMEN = ["viskwekerij", "kweekzalm"]
 
 def scrape_bekendmakingen(seen, max_per_term=15):
-    """Scrape officielebekendmakingen.nl op zoektermen. Geeft dict {term: [items]}."""
+    """Zoek in officiele bekendmakingen via de SRU API van overheid.nl."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    NS = {
+        "srw": "http://docs.oasis-open.org/ns/search-ws/sruResponse",
+        "gzd": "http://standaarden.overheid.nl/sru",
+        "dcterms": "http://purl.org/dc/terms/",
+    }
+
     results = {}
-    for term in BEKENDMAKINGEN_TERMEN:
-        url = f"https://zoek.officielebekendmakingen.nl/resultaten?zv={term}"
+    for idx_term, term in enumerate(BEKENDMAKINGEN_TERMEN):
+        if idx_term > 0:
+            time.sleep(2)
+
+        query = quote(f'cql.textAndIndexes="{term}"')
+        url = (
+            "https://repository.overheid.nl/sru"
+            f"?operation=searchRetrieve&version=2.0"
+            f"&x-connection=officielepublicaties"
+            f"&query={query}"
+            f"&maximumRecords=100"
+        )
+
         try:
-            r = fetch(url, timeout=25)
+            r = fetch(url, timeout=30)
             r.raise_for_status()
+            root = ET.fromstring(r.content)
         except Exception as e:
             print(f"  ⚠ Bekendmakingen ({term}): {e}")
             continue
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        container = soup.select_one("#Publicaties")
-        if not container:
-            continue
-
         items = []
-        for li in container.select("ul > li"):
-            a = li.select_one("h2.result--title a")
-            if not a:
+        for rec in root.iter():
+            if not rec.tag.endswith("recordData"):
                 continue
-            href = a.get("href", "")
-            if not href:
-                continue
-            full = href if href.startswith("http") else "https://zoek.officielebekendmakingen.nl/" + href.lstrip("/")
+            titel = soort = link = datum = ""
+            for el in rec.iter():
+                tag = el.tag.split("}")[-1]
+                txt = (el.text or "").strip()
+                if not txt:
+                    continue
+                if tag == "title" and not titel:
+                    titel = txt
+                elif tag == "type" and not soort:
+                    soort = txt
+                elif tag == "date" and not datum:
+                    datum = txt
+                elif tag in ("identifier", "preferredUrl") and txt.startswith("http") and not link:
+                    link = txt
 
-            soort = a.get_text(strip=True)
-            p = li.find("p")
-            omschrijving = p.get_text(strip=True) if p else ""
-            titel = omschrijving or soort
-            if not titel or len(titel) < 5:
+            if not link or not titel:
                 continue
 
-            item_id = uid(full)
+            item_id = uid(link)
             if item_id in seen:
                 continue
 
@@ -976,10 +998,13 @@ def scrape_bekendmakingen(seen, max_per_term=15):
                 "id": item_id,
                 "title": titel[:160],
                 "soort": soort,
-                "link": full,
+                "datum": datum,
+                "link": link,
             })
-            if len(items) >= max_per_term:
-                break
+
+        # Nieuwste eerst, dan beperken
+        items.sort(key=lambda x: x.get("datum", ""), reverse=True)
+        items = items[:max_per_term]
 
         if items:
             results[term] = items
@@ -997,8 +1022,10 @@ def build_bekendmakingen_section(results):
         rijen = ""
         for it in items:
             soort = it.get("soort", "")
+            datum = it.get("datum", "")
+            meta = " · ".join(x for x in (soort, datum) if x)
             soort_html = (f'<span style="font-size:11px;color:#888;'
-                          f'margin-right:6px">{soort}</span>') if soort else ""
+                          f'display:block;margin-bottom:2px">{meta}</span>') if meta else ""
             rijen += f"""
             <div style="padding:7px 0;border-bottom:1px solid #f0f0f0">
               {soort_html}
