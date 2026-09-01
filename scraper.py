@@ -1490,6 +1490,10 @@ def main():
     html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, bekendmakingen_html, source_stats)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
+
+    # Sla alle gezien-items op zodat ze volgende week niet terugkomen
+    save_seen(seen | new_seen)
+    print(f"seen_items.json bijgewerkt — {len(seen | new_seen)} items totaal")
     print("Klaar.")
 
 
