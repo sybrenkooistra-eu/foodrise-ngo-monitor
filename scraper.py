@@ -127,6 +127,10 @@ OPINION_SOURCES = [
      "link_pattern": r"freedomfoodalliance\.org/unfork-the-food-system/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
+    {"name": "Inside Climate News (EN)",
+     "type": "rss",
+     "url": "https://insideclimatenews.org/feed/"},
+
     {"name": "Mongabay (EN)",
      "type": "rss",
      "url": "https://news.mongabay.com/feed/"},
