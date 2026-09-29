@@ -941,20 +941,25 @@ def build_nieuwe_oogst_section(results):
 
 # ── Officiële Bekendmakingen ─────────────────────────────────────────────────
 
-BEKENDMAKINGEN_TERMEN = ["viskwekerij", "kweekzalm"]
+BEKENDMAKINGEN_TERMEN = [
+    "viskwekerij", "kweekzalm", "kweekvis",
+    "mestvergisting", "biogas", "monovergister", "groen gas",
+]
 
-def scrape_bekendmakingen(seen, max_per_term=15):
-    """Zoek in officiele bekendmakingen via de SRU API van overheid.nl."""
+def scrape_bekendmakingen(seen, max_totaal=25, dagen=30):
+    """Zoek in officiele bekendmakingen via de SRU API van overheid.nl.
+
+    Geeft één platte lijst terug, gesorteerd op datum (nieuwste eerst),
+    beperkt tot publicaties van de afgelopen `dagen` dagen.
+    """
     import xml.etree.ElementTree as ET
     from urllib.parse import quote
 
-    NS = {
-        "srw": "http://docs.oasis-open.org/ns/search-ws/sruResponse",
-        "gzd": "http://standaarden.overheid.nl/sru",
-        "dcterms": "http://purl.org/dc/terms/",
-    }
+    cutoff_bm = (datetime.now() - timedelta(days=dagen)).strftime("%Y-%m-%d")
 
-    results = {}
+    alle_items = []
+    gezien_links = set()
+
     for idx_term, term in enumerate(BEKENDMAKINGEN_TERMEN):
         if idx_term > 0:
             time.sleep(2)
@@ -976,7 +981,6 @@ def scrape_bekendmakingen(seen, max_per_term=15):
             print(f"  ⚠ Bekendmakingen ({term}): {e}")
             continue
 
-        items = []
         for rec in root.iter():
             if not rec.tag.endswith("recordData"):
                 continue
@@ -997,56 +1001,48 @@ def scrape_bekendmakingen(seen, max_per_term=15):
 
             if not link or not titel:
                 continue
+            if not datum or datum < cutoff_bm:
+                continue
+            if link in gezien_links:
+                continue
 
             item_id = uid(link)
             if item_id in seen:
                 continue
 
-            items.append({
+            gezien_links.add(link)
+            alle_items.append({
                 "id": item_id,
                 "title": titel[:160],
                 "soort": soort,
                 "datum": datum,
+                "term": term,
                 "link": link,
             })
 
-        # Nieuwste eerst, dan beperken
-        items.sort(key=lambda x: x.get("datum", ""), reverse=True)
-        items = items[:max_per_term]
-
-        if items:
-            results[term] = items
-
-    return results
+    alle_items.sort(key=lambda x: x.get("datum", ""), reverse=True)
+    return alle_items[:max_totaal]
 
 
-def build_bekendmakingen_section(results):
-    """Bouw HTML voor de bekendmakingen-sectie."""
-    if not results:
+def build_bekendmakingen_section(items):
+    """Bouw HTML voor de bekendmakingen-sectie (één lijst)."""
+    if not items:
         return ""
 
-    blokken = ""
-    for term, items in results.items():
-        rijen = ""
-        for it in items:
-            soort = it.get("soort", "")
-            datum = it.get("datum", "")
-            meta = " · ".join(x for x in (soort, datum) if x)
-            soort_html = (f'<span style="font-size:11px;color:#888;'
-                          f'display:block;margin-bottom:2px">{meta}</span>') if meta else ""
-            rijen += f"""
-            <div style="padding:7px 0;border-bottom:1px solid #f0f0f0">
-              {soort_html}
-              <a href="{it['link']}" style="font-size:14px;color:#1C4332;
-                 text-decoration:none;font-weight:500">{it['title']}</a>
-            </div>"""
-        blokken += f"""
-        <div style="margin-bottom:20px">
-          <p style="font-size:12px;font-weight:700;text-transform:uppercase;
-                    letter-spacing:.5px;color:#1C4332;margin:0 0 8px">
-            Zoekterm: {term}
-          </p>
-          {rijen}
+    rijen = ""
+    for it in items:
+        meta_delen = [x for x in (it.get("soort", ""), it.get("datum", "")) if x]
+        meta = " · ".join(meta_delen)
+        term = it.get("term", "")
+        term_html = (f'<span style="background:#eef6ef;color:#1C4332;font-size:10px;'
+                     f'padding:1px 7px;border-radius:10px;margin-left:6px;'
+                     f'text-transform:uppercase;letter-spacing:.3px">{term}</span>') if term else ""
+        meta_html = (f'<span style="font-size:11px;color:#888">{meta}</span>{term_html}') if meta else term_html
+        rijen += f"""
+        <div style="padding:8px 0;border-bottom:1px solid #f0f0f0">
+          <div style="margin-bottom:3px">{meta_html}</div>
+          <a href="{it['link']}" style="font-size:14px;color:#1C4332;
+             text-decoration:none;font-weight:500">{it['title']}</a>
         </div>"""
 
     return f"""
@@ -1054,16 +1050,18 @@ def build_bekendmakingen_section(results):
       <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
                  text-transform:uppercase;color:#1C4332;
                  border-bottom:2px solid #9FE870;
-                 padding-bottom:5px;margin-bottom:16px">
-        Officiële bekendmakingen — viskwekerij
+                 padding-bottom:5px;margin-bottom:14px">
+        Officiële bekendmakingen ({len(items)})
       </h2>
-      {blokken}
-      <p style="font-size:11px;color:#999;margin:12px 0 0">
+      {rijen}
+      <p style="font-size:11px;color:#999;margin:14px 0 0">
         Bron: <a href="https://zoek.officielebekendmakingen.nl"
-        style="color:#999">zoek.officielebekendmakingen.nl</a>
-        · alleen publicaties die niet eerder zijn getoond
+        style="color:#999">officielebekendmakingen.nl</a>
+        · viskwekerij, kweekzalm, kweekvis, mestvergisting, biogas, monovergister, groen gas
+        · afgelopen 30 dagen
       </p>
     </div>"""
+
 
 def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bekendmakingen_html="", source_stats=None):
     # Verzamel alle items en sorteer op relevantie
@@ -1482,14 +1480,14 @@ def main():
 
     # Officiële bekendmakingen
     print("\nOfficiële bekendmakingen scrapen …")
-    bm_results = scrape_bekendmakingen(seen | new_seen)
-    for term, items in bm_results.items():
-        print(f"  {term}: {len(items)} nieuwe publicatie(s)")
-        for it in items:
+    bm_items = scrape_bekendmakingen(seen | new_seen)
+    if bm_items:
+        print(f"  {len(bm_items)} nieuwe publicatie(s)")
+        for it in bm_items:
             new_seen.add(it["id"])
-    if not bm_results:
+    else:
         print("  Geen nieuwe publicaties")
-    bekendmakingen_html = build_bekendmakingen_section(bm_results)
+    bekendmakingen_html = build_bekendmakingen_section(bm_items)
 
     html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, bekendmakingen_html, source_stats)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
