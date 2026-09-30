@@ -127,6 +127,10 @@ OPINION_SOURCES = [
      "link_pattern": r"freedomfoodalliance\.org/unfork-the-food-system/[a-z0-9-]{5,}",
      "exclude_pattern": r"^$"},
 
+    {"name": "Raj Patel (EN)",
+     "type": "rss",
+     "url": "https://newsletter.rajpatel.org/feed"},
+
     {"name": "Inside Climate News (EN)",
      "type": "rss",
      "url": "https://insideclimatenews.org/feed/"},
