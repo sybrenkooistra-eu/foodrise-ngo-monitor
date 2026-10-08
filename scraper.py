@@ -466,12 +466,77 @@ def slug_to_title(url):
     slug = path.split("/")[-1]
     return slug.replace("-", " ").title()
 
-def clean_title(raw):
-    """Verwijder datum en type-suffix die Milieudefensie aan titels plakt."""
-    raw = re.sub(r"\d{1,2} (januari|februari|maart|april|mei|juni|juli|augustus|"
-                  r"september|oktober|november|december) \d{4}", "", raw)
-    raw = re.sub(r"\s*(Nieuws|Blog|Opinie|Agenda)$", "", raw.strip())
+# Namen met een hoofdletter binnenin: die mag de woordsplitser niet opbreken.
+CAMELCASE_NAMEN = [
+    "FrieslandCampina", "ForFarmers", "BirdLife", "ClientEarth", "DeSmog",
+    "EuroBirdwatch", "McDonald", "MacDonald", "SalMar", "BakkaFrost", "FoodRise",
+]
+
+MAANDEN_RE = (r"januari|februari|maart|april|mei|juni|juli|augustus|september|oktober|"
+              r"november|december|january|march|may|june|july|august|october|"
+              r"januar|februar|märz|mai|juni|juli|oktober|dezember|"
+              r"jan|feb|mar|apr|jun|jul|aug|sep|sept|okt|oct|nov|dec|dez")
+
+def clean_title(raw, max_len=130):
+    """Maak een bruikbare kop van ruwe kaart-tekst.
+
+    Veel bronnen stoppen categorie, datum, kop en inleiding in één <a>. Zonder
+    scheidingsteken plakt BeautifulSoup die aan elkaar ('Renewable energyGreenpeace
+    threatens…'). Hier splitsen we die weer en houden we de kop over.
+    """
+    raw = re.sub(r"\s+", " ", raw or "").strip()
+    if not raw:
+        return ""
+
+    # Datums die bronnen vóór of ín de kop plakken. Bewust zonder \b: ze zitten
+    # vaak vastgeplakt aan het volgende woord ('30/09/26Pesticide omnibus').
+    raw = re.sub(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", " ", raw)
+    raw = re.sub(rf"\d{{1,2}}\.?\s*({MAANDEN_RE})\.?\s*\d{{4}}", " ", raw, flags=re.I)
+    raw = re.sub(rf"({MAANDEN_RE})\s+\d{{1,2}},?\s*\d{{4}}", " ", raw, flags=re.I)
+
+    # Woordgrens herstellen waar twee tekstblokken aan elkaar zijn geplakt:
+    # kleine letter direct gevolgd door hoofdletter ('energyGreenpeace').
+    # Namen die zelf een hoofdletter binnenin hebben eerst afschermen.
+    bewaard = {}
+    for idx, naam in enumerate(CAMELCASE_NAMEN):
+        if naam in raw:                       # hoofdlettergevoelig: alleen de
+            sleutel = f"\x00{idx}\x00"        # echte schrijfwijze afschermen
+            raw = raw.replace(naam, sleutel)
+            bewaard[sleutel] = naam
+    raw = re.sub(r"(?<=[a-zà-ÿ])(?=[A-ZÀ-Þ])", " ", raw)
+    for sleutel, naam in bewaard.items():
+        raw = raw.replace(sleutel, naam)
+    raw = re.sub(r"(?<=[.!?])(?=[A-ZÀ-Þ])", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip(" ·–—-|,")
+
+    raw = re.sub(r"^\s*(Nieuws|News|Blog|Opinie|Persbericht|Pressemitteilung|"
+                 r"Press release|Nyheder|Noticias|Actualités)\b[:\s·–—-]*", "", raw, flags=re.I)
+    raw = re.sub(r"\s*(Nieuws|Blog|Opinie|Agenda)$", "", raw).strip()
+
+    # Alles ná het einde van de eerste zin is inleiding, geen kop
+    if len(raw) > max_len:
+        knip = re.search(r"[.!?](?=\s)", raw[:max_len + 40])
+        if knip and knip.start() > 25:
+            raw = raw[:knip.start() + 1]
+        else:
+            ruimte = raw.rfind(" ", 0, max_len)
+            raw = (raw[:ruimte] if ruimte > 25 else raw[:max_len]).rstrip(" ,;:-") + "…"
+
     return raw.strip()
+
+
+def link_title(a):
+    """Haal de kop uit een <a> die een heel kaartje omvat."""
+    kop = a.find(["h1", "h2", "h3", "h4", "h5"])
+    if kop:
+        tekst = clean_title(kop.get_text(" ", strip=True))
+        if len(tekst) > 4:
+            return tekst
+    for attr in ("aria-label", "title"):
+        waarde = (a.get(attr) or "").strip()
+        if len(waarde) > 4:
+            return clean_title(waarde)
+    return clean_title(a.get_text(" ", strip=True)[:400])
 
 def get_snippet(entry):
     for field in ("summary", "content"):
@@ -583,10 +648,11 @@ def scrape_html_card_links(source):
         if not href or href in seen:
             continue
         seen.add(href)
+        titel = link_title(tag) if tag.name == "a" else ""
         items.append({
             "id": uid(href),
             "source": source["name"],
-            "title": slug_to_title(href),
+            "title": titel if len(titel) > 8 else slug_to_title(href),
             "link": href,
             "snippet": "",
         })
@@ -611,7 +677,7 @@ def scrape_html_links(source):
         if not full or full in seen:
             continue
         if include_pat.search(full) and not exclude_pat.search(full):
-            title = clean_title(a.get_text(strip=True)[:200])
+            title = link_title(a)
             if len(title) > 4:
                 seen.add(full)
                 items.append({
@@ -943,12 +1009,257 @@ def build_nieuwe_oogst_section(results):
     </div>"""
 
 
+# ── Onderwerpfilter ──────────────────────────────────────────────────────────
+#
+# Veel bronnen zijn brede milieuorganisaties die ook over staal, verkeer of
+# verpakkingen publiceren. Die items worden hier eruit gefilterd vóór ze naar
+# Claude gaan — dat scheelt ruis in de mail én API-kosten.
+
+# Lange, ondubbelzinnige termen: overal in het woord toegestaan.
+TOPIC_SUBSTRINGS = [
+    "veehouder", "veeteelt", "veevoer", "melkvee", "pluimvee", "landbouw", "voedsel",
+    "zuivel", "slachthuis", "slachterij", "stikstof", "methaan", "mestvergist",
+    "kweekvis", "viskweker", "visserij", "aquacultuur", "boerderij", "supermarkt",
+    "landwirt", "fleisch", "lebensmittel", "tierhaltung", "nutztier", "milchvieh",
+    "molkerei", "ernährung", "landwirtschaft", "methan", "pestizid", "fischzucht",
+    "agricult", "agribusiness", "agrifood", "livestock", "slaughter", "aquacult",
+    "fishfarm", "fish farm", "factory farm", "dairy", "poultry", "pesticid",
+    "supermark", "foodsystem", "food system", "fisheries", "seafood",
+    "ganader", "alimentari", "alimentaci", "agricol", "allevament", "mangim",
+    "élevage", "alimentation", "agroalimentaire", "pêche", "metano",
+    "jordbruk", "landbrug", "fødevare", "mejeri", "husdyr", "livsmedel",
+]
+
+# Korte of dubbelzinnige stammen: alleen aan het begin van een woord.
+TOPIC_PREFIXES = [
+    "vee", "vlees", "melk", "varken", "zeug", "kip", "kippen", "koe", "koeien",
+    "rund", "kalf", "kalver", "vis", "zalm", "voer", "mest", "soja", "boer",
+    "akker", "gewas", "eiwit", "eieren", "biologisch", "gras", "stal",
+    "meat", "milk", "pig", "pork", "hog", "cattle", "beef", "veal", "calf",
+    "chicken", "hen", "broiler", "fish", "salmon", "shrimp", "feed", "farm",
+    "farmer", "agri", "agro", "soy", "manure", "methane", "nitrogen", "food",
+    "protein", "egg", "eggs", "crop", "herd", "grazing", "abattoir",
+    "fleisch", "milch", "schwein", "geflügel", "rind", "kalb", "fisch", "lachs",
+    "futter", "bauer", "bäuerin", "soja", "gülle", "eier", "agrar", "hof",
+    "carne", "leche", "lácteo", "cerdo", "porcino", "vacuno", "pollo", "aves",
+    "pescado", "salmón", "pienso", "huevo", "comedor", "granja", "purines",
+    "viande", "lait", "laitier", "porc", "volaille", "bovin", "poisson",
+    "saumon", "aliment", "paysan", "lisier", "œuf", "oeuf", "ferme",
+    "latte", "suino", "pollame", "bovino", "pesce", "salmone", "contadino",
+    "kød", "mælk", "svin", "fjerkræ", "kvæg", "laks", "foder", "bonde", "æg",
+    "kött", "mjölk", "gris", "nöt", "fisk", "ägg", "djurhållning",
+]
+
+# Bedrijven en ketens uit de voedselketen. Veel koppen noemen alleen het bedrijf
+# ('Lidl Aldi Stand Up For The Amazon') zonder één voedselwoord.
+TOPIC_BEDRIJVEN = [
+    "frieslandcampina", "campina", "vion", "nutreco", "skretting", "trouw nutrition",
+    "jbs", "cargill", "tyson", "smithfield", "danish crown", "arla", "lactalis",
+    "danone", "nestlé", "nestle", "unilever", "mowi", "bakkafrost", "salmar",
+    "leroy", "cooke", "grieg", "brf", "marfrig", "minerva", "bunge", "adm",
+    "louis dreyfus", "corteva", "syngenta", "bayer", "basf", "yara",
+    "lidl", "aldi", "carrefour", "tesco", "sainsbury", "ahold", "albert heijn",
+    "jumbo", "plus ", "rewe", "edeka", "mercadona", "coop ", "auchan", "leclerc",
+    "mcdonald", "burger king", "kfc", "grupo mateus", "pilgrim", "perdue",
+    "fonterra", "saputo", "müller milch", "de heus", "forfarmers", "agrifirm",
+]
+
+_TOPIC_PREFIX_RE = re.compile(r"\b(?:" + "|".join(TOPIC_PREFIXES) + r")", re.I)
+
+def is_on_topic(item):
+    """True als titel of snippet over voedsel, landbouw, vee of vis gaat."""
+    tekst = f"{item.get('title','')} {item.get('snippet','')}".lower()
+    if not tekst.strip():
+        return True  # niets om op te beoordelen — laat door, Claude scoort hem alsnog
+    if any(term in tekst for term in TOPIC_SUBSTRINGS):
+        return True
+    if any(bedrijf in tekst for bedrijf in TOPIC_BEDRIJVEN):
+        return True
+    return bool(_TOPIC_PREFIX_RE.search(tekst))
+
+
+# ── Maandelijkse Substack-overzichten ────────────────────────────────────────
+
+SUBSTACK_MONTHLY = [
+    {
+        "name": "Animal Law & Policy Europe",
+        "label": "SUBSTACK: EU OVERVIEW UPDATE",
+        "url": "https://animallaweurope.substack.com/feed",
+        "site": "https://animallaweurope.substack.com/",
+        "context": ("Maandelijks overzicht van het European Institute for Animal Law & Policy "
+                    "over EU-wetgeving en rechtszaken rond dierenwelzijn en veehouderij."),
+    },
+    {
+        "name": "Farm Animal Welfare",
+        "label": "SUBSTACK: FARM ANIMAL WELFARE UPDATE",
+        "url": "https://farmanimalwelfare.substack.com/feed",
+        "site": "https://farmanimalwelfare.substack.com/",
+        "context": ("Analyse van Lewis Bollard (Open Philanthropy) over de wereldwijde strijd "
+                    "tegen de bio-industrie: wetgeving, bedrijfsbeloftes, strategie."),
+    },
+]
+
+def scrape_substack_monthly(seen, dagen=None, max_per_bron=2):
+    """Haal nieuwe edities op uit de maandelijkse Substack-overzichten.
+
+    Geen datumvenster: deze twee publiceren onregelmatig (soms twee of drie
+    maanden stil), dus elk venster snijdt edities weg. De dedupe via
+    seen_items.json zorgt dat een editie precies één keer langskomt.
+    Retourneert (items, stats).
+    """
+    cutoff = (datetime.now() - timedelta(days=dagen)) if dagen else None
+    items, stats = [], []
+
+    for src in SUBSTACK_MONTHLY:
+        try:
+            r = fetch(src["url"], timeout=20)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            feed = feedparser.parse(r.content)
+            entries = feed.entries or []
+        except Exception as e:
+            print(f"  {src['name']}: ⚠ fout: {e}")
+            stats.append((f"Substack · {src['name']}", 0, 0, True, 0))
+            continue
+
+        nieuw = []
+        for e in entries[:10]:
+            link = (e.get("link") or "").strip()
+            title = (e.get("title") or "").strip()
+            if not link or not title:
+                continue
+            item_id = uid(link)
+            if item_id in seen:
+                continue
+
+            published = e.get("published_parsed") or e.get("updated_parsed")
+            date_str = ""
+            if published:
+                if cutoff and datetime(*published[:6]) < cutoff:
+                    continue
+                date_str = time.strftime("%-d %b %Y", published)
+
+            nieuw.append({
+                "id": item_id,
+                "name": src["name"],
+                "label": src["label"],
+                "site": src["site"],
+                "context": src["context"],
+                "title": title,
+                "link": link,
+                "date": date_str,
+                "snippet": get_snippet(e),
+            })
+            if len(nieuw) >= max_per_bron:
+                break
+
+        print(f"  {src['name']}: {len(nieuw)} nieuwe editie(s) ({len(entries)} in feed)")
+        stats.append((f"Substack · {src['name']}", len(entries), len(nieuw), False, 0))
+        items.extend(nieuw)
+
+    return items, stats
+
+
+def summarise_substack(client, item):
+    """Korte Nederlandse samenvatting van één Substack-editie."""
+    prompt = f"""Je bent research-assistent voor FoodRise, een Europese campagneorganisatie
+tegen industriële dierlijke landbouw. Doelwitten: FrieslandCampina, Vion, Nutreco/Skretting.
+Thema's: veehouderij, methaan, EU-landbouwbeleid, dierenwelzijnsrecht, kweekvis, veevoer.
+
+Hieronder een nieuwe editie van een maandelijkse nieuwsbrief:
+{item['context']}
+
+Titel: {item['title']}
+Link: {item['link']}
+Inhoud: {item['snippet'][:2500]}
+
+Vat deze editie samen in precies 3 Nederlandse zinnen: wat staat erin en wat is
+het belangrijkste dat FoodRise hieruit moet meenemen. Geen inleiding, alleen de drie zinnen."""
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        print(f"    ⚠ samenvatting mislukt: {e}")
+        return item.get("snippet", "")[:400]
+
+
+def build_substack_section(items):
+    """Bouw HTML voor de maandelijkse Substack-overzichten."""
+    if not items:
+        return ""
+
+    blokken = ""
+    for it in items:
+        datum = (f'<span style="font-size:11px;color:#999;margin-left:8px">'
+                 f'{it["date"]}</span>') if it.get("date") else ""
+        blokken += f"""
+        <div style="border-left:3px solid #1C4332;padding:12px 16px;
+                    margin-bottom:18px;background:#f4f8f4">
+          <div style="margin-bottom:6px">
+            <strong style="font-size:13px;color:#1C4332;letter-spacing:.5px">
+              {it['label']}
+            </strong>
+            <span style="font-size:12px;color:#1C4332">
+              [<a href="{it['site']}" style="color:#1C4332">{it['name'].lower()}</a>]
+            </span>{datum}
+          </div>
+          <p style="margin:0 0 6px;font-weight:600;font-size:15px;
+                    color:#1C4332;line-height:1.3">
+            <a href="{it['link']}" style="color:#1C4332;text-decoration:none">{it['title']}</a>
+          </p>
+          <p style="margin:0 0 6px;font-size:14px;color:#333;line-height:1.5">
+            {it['summary']}
+          </p>
+          <a href="{it['link']}" style="font-size:12px;color:#E8703A;text-decoration:none">
+            → lees de volledige editie
+          </a>
+        </div>"""
+
+    return f"""
+    <div style="margin-bottom:32px">
+      <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                 text-transform:uppercase;color:#1C4332;
+                 border-bottom:2px solid #1C4332;
+                 padding-bottom:5px;margin-bottom:14px">
+        Maandelijkse overzichten ({len(items)})
+      </h2>
+      {blokken}
+    </div>"""
+
+
 # ── Officiële Bekendmakingen ─────────────────────────────────────────────────
 
 BEKENDMAKINGEN_TERMEN = [
     "viskwekerij", "kweekzalm", "kweekvis",
     "mestvergisting", "biogas", "monovergister", "groen gas",
 ]
+
+# Publicatiesoorten die nooit een vergunning of subsidie zijn: Kamerstukken,
+# bijlagen bij Kamerbrieven, verslagen. Die trokken het hele energiedebat binnen.
+BEKENDMAKINGEN_SOORT_UIT = (
+    "kamerstuk", "bijlage", "handeling", "agenda", "vraag", "antwoord",
+    "verslag", "brief", "niet-dossierstuk", "aanhangsel",
+)
+
+# Minstens één hiervan moet in de soort of de titel staan.
+BEKENDMAKINGEN_TREFWOORDEN = (
+    "vergunning", "beschikking", "ontwerpbesluit", "ontwerpbeschikking",
+    "besluit", "aanvraag", "melding", "subsidie", "ontheffing",
+    "maatwerkvoorschrift", "zienswijze", "terinzagelegging", "kennisgeving",
+)
+
+def is_vergunning(soort, titel):
+    """Houd alleen vergunningen, besluiten en subsidies over."""
+    s = (soort or "").lower()
+    t = (titel or "").lower()
+    if any(uit in s for uit in BEKENDMAKINGEN_SOORT_UIT):
+        return False
+    return any(w in s or w in t for w in BEKENDMAKINGEN_TREFWOORDEN)
 
 def scrape_bekendmakingen(seen, max_totaal=25, dagen=30):
     """Zoek in officiele bekendmakingen via de SRU API van overheid.nl.
@@ -1007,6 +1318,8 @@ def scrape_bekendmakingen(seen, max_totaal=25, dagen=30):
                 continue
             if not datum or datum < cutoff_bm:
                 continue
+            if not is_vergunning(soort, titel):
+                continue
             if link in gezien_links:
                 continue
 
@@ -1062,12 +1375,12 @@ def build_bekendmakingen_section(items):
         Bron: <a href="https://zoek.officielebekendmakingen.nl"
         style="color:#999">officielebekendmakingen.nl</a>
         · viskwekerij, kweekzalm, kweekvis, mestvergisting, biogas, monovergister, groen gas
-        · afgelopen 30 dagen
+        · alleen vergunningen, besluiten en subsidies · afgelopen 30 dagen
       </p>
     </div>"""
 
 
-def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bekendmakingen_html="", source_stats=None):
+def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bekendmakingen_html="", source_stats=None, substack_html=""):
     # Verzamel alle items en sorteer op relevantie
     all_items = []
     for source_name, items in items_by_source.items():
@@ -1142,27 +1455,59 @@ def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bek
           {cards}
         </div>"""
 
+    def render_laag(items):
+        """Lage relevantie: alleen een linklijst, geen samenvattingen."""
+        if not items:
+            return ""
+        regels = ""
+        for item in items:
+            meta = " · ".join(x for x in (item.get("_source", ""), item.get("date", "")) if x)
+            regels += f"""
+            <li style="margin-bottom:7px;line-height:1.35">
+              <a href="{item['link']}" style="color:#1C4332;text-decoration:none;
+                 font-size:13px">{item['title']}</a>
+              <span style="font-size:11px;color:#999;display:block">{meta}</span>
+            </li>"""
+        return f"""
+        <div style="margin-bottom:36px">
+          <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                     text-transform:uppercase;color:#1C4332;
+                     border-bottom:2px solid #ddd;
+                     padding-bottom:5px;margin-bottom:12px">
+            Overig — Laag ({len(items)} items)
+          </h2>
+          <p style="font-size:11px;color:#999;margin:0 0 10px">
+            Alleen titels — klik door voor het artikel.
+          </p>
+          <ul style="margin:0;padding-left:18px">{regels}</ul>
+        </div>"""
+
     sections = (
+        substack_html +
         render_section(f"Relevant — Hoog ({len(hoog)} items)", hoog, "#9FE870") +
         render_section(f"Relevant — Midden ({len(midden)} items)", midden, "#FCE9B8") +
         opinion_html +
         nieuwe_oogst_html +
         bekendmakingen_html +
-        render_section(f"Overig — Laag ({len(laag)} items)", laag, "#ddd")
+        render_laag(laag)
     )
 
     # ── Statustabel ───────────────────────────────────────────────────────────
     if source_stats:
         rows = ""
-        for name, tot, fresh, error in source_stats:
+        for rij in source_stats:
+            name, tot, fresh, error = rij[0], rij[1], rij[2], rij[3]
+            offtopic = rij[4] if len(rij) > 4 else 0
             if error:
                 kleur = "#C0492F"; status = "&#9888; fout"
             elif tot == 0:
                 kleur = "#E8703A"; status = "0 gevonden"
             elif fresh == 0:
-                kleur = "#888"; status = "geen nieuw"
+                kleur = "#888"
+                status = f"geen nieuw ({offtopic} off-topic)" if offtopic else "geen nieuw"
             else:
-                kleur = "#1C4332"; status = f"{fresh} nieuw"
+                kleur = "#1C4332"
+                status = f"{fresh} nieuw ({offtopic} off-topic)" if offtopic else f"{fresh} nieuw"
             rows += (
                 f'<tr>'
                 f'<td style="padding:4px 10px;font-size:12px;border-bottom:1px solid #eee">{name}</td>'
@@ -1397,7 +1742,7 @@ def main():
 
     items_by_source = {}
     new_seen = set()
-    source_stats = []  # (naam, totaal, nieuw, fout)
+    source_stats = []  # (naam, totaal, nieuw, fout, off-topic)
 
     cutoff = datetime.now() - timedelta(days=14)
 
@@ -1428,17 +1773,25 @@ def main():
             error = False
         except Exception as e:
             print(f"⚠ fout: {e}")
-            source_stats.append((source["name"], 0, 0, True))
+            source_stats.append((source["name"], 0, 0, True, 0))
             continue
 
-        fresh = [i for i in all_items if i["id"] not in seen and is_recent(i)]
-        source_stats.append((source["name"], len(all_items), len(fresh), False))
+        kandidaten = [i for i in all_items if i["id"] not in seen and is_recent(i)]
+        fresh = [i for i in kandidaten if is_on_topic(i)]
+        afgevallen = len(kandidaten) - len(fresh)
+        source_stats.append((source["name"], len(all_items), len(fresh), False, afgevallen))
+
+        # Off-topic items tellen als gezien, zodat ze volgende week niet terugkomen
+        door_filter = {i["id"] for i in fresh}
+        for item in kandidaten:
+            if item["id"] not in door_filter:
+                new_seen.add(item["id"])
 
         if not fresh:
-            print("geen nieuw")
+            print(f"geen nieuw{f' ({afgevallen} off-topic)' if afgevallen else ''}")
             continue
 
-        print(f"{len(fresh)} nieuw — samenvatten …")
+        print(f"{len(fresh)} nieuw{f' ({afgevallen} off-topic)' if afgevallen else ''} — samenvatten …")
         summarised = []
         for item in fresh:
             item["summary"] = summarise(client, item)
@@ -1452,8 +1805,19 @@ def main():
 
     save_seen(seen | new_seen)
 
-    if total == 0:
+    # Maandelijkse Substack-overzichten
+    print("\nMaandelijkse Substack-overzichten ophalen …")
+    substack_items, substack_stats = scrape_substack_monthly(seen | new_seen)
+    source_stats.extend(substack_stats)
+    for it in substack_items:
+        print(f"    samenvatten: {it['title'][:60]} …")
+        it["summary"] = summarise_substack(client, it)
+        new_seen.add(it["id"])
+    substack_html = build_substack_section(substack_items)
+
+    if total == 0 and not substack_items:
         print("Niets te versturen.")
+        save_seen(seen | new_seen)
         return
 
     # Opinie & Analyse sectie
@@ -1493,7 +1857,8 @@ def main():
         print("  Geen nieuwe publicaties")
     bekendmakingen_html = build_bekendmakingen_section(bm_items)
 
-    html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html, bekendmakingen_html, source_stats)
+    html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html,
+                         bekendmakingen_html, source_stats, substack_html)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
 
