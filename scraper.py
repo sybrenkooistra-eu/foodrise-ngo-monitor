@@ -235,6 +235,14 @@ SOURCES = [
      "link_pattern": r"greenpeace\.org/nl/nieuws/[a-z0-9-]+/[a-z0-9-]{5,}",
      "exclude_pattern": r"/(nieuwsberichten|pers|onderzoek|blogs)/?$"},
 
+    # ── Animals Today ─────────────────────────────────────
+    # WordPress-feed in plaats van de post-content-container: de artikel-URL's
+    # zijn kale slugs zonder datum of categorie, dus niet te onderscheiden van
+    # gewone pagina's. De feed levert titel, link, datum en samenvatting kant-en-klaar.
+    {"name": "Animals Today (NL)",
+     "type": "rss",
+     "url": "https://www.animalstoday.nl/feed/"},
+
     {"name": "Naturskyddsföreningen",
      "type": "html",
      "url": "https://www.naturskyddsforeningen.se/aktuella-kampanjer-och-projekt/",
@@ -548,7 +556,12 @@ def get_snippet(entry):
     return ""
 
 def fetch(url, timeout=15):
-    return requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+    r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+    # Zonder charset in de header raadt requests ISO-8859-1 en wordt UTF-8 mojibake
+    # ('patiÃ«nten'). Laat de inhoud zelf de codering bepalen.
+    if "charset" not in (r.headers.get("Content-Type") or "").lower():
+        r.encoding = r.apparent_encoding or "utf-8"
+    return r
 
 def fetch_cs(url, timeout=15):
     """Fetch via cloudscraper voor Cloudflare-beschermde sites."""
@@ -1027,28 +1040,47 @@ TOPIC_SUBSTRINGS = [
     "supermark", "foodsystem", "food system", "fisheries", "seafood",
     "ganader", "alimentari", "alimentaci", "agricol", "allevament", "mangim",
     "élevage", "alimentation", "agroalimentaire", "pêche", "metano",
-    "jordbruk", "landbrug", "fødevare", "mejeri", "husdyr", "livsmedel",
+    "jordbruk", "landbrug", "fødevare", "husdyr", "livsmedel", "landmand", "landmænd",
+    "q-koorts", "vogelgriep", "bird flu", "avian influenza", "varkenspest",
+    "swine fever", "blauwtong", "bluetongue", "mond- en klauwzeer",
+    "dierziekte", "veesector", "visvoer", "vismeel", "fishmeal", "aquafeed",
 ]
 
 # Korte of dubbelzinnige stammen: alleen aan het begin van een woord.
 TOPIC_PREFIXES = [
     "vee", "vlees", "melk", "varken", "zeug", "kip", "kippen", "koe", "koeien",
     "rund", "kalf", "kalver", "vis", "zalm", "voer", "mest", "soja", "boer",
-    "akker", "gewas", "eiwit", "eieren", "biologisch", "gras", "stal",
-    "meat", "milk", "pig", "pork", "hog", "cattle", "beef", "veal", "calf",
-    "chicken", "hen", "broiler", "fish", "salmon", "shrimp", "feed", "farm",
-    "farmer", "agri", "agro", "soy", "manure", "methane", "nitrogen", "food",
-    "protein", "egg", "eggs", "crop", "herd", "grazing", "abattoir",
+    "akker", "gewas", "eiwit", "eieren", "biologisch",
+    "meat", "milk", "pork", "cattle", "beef", "veal", "calf",
+    "chicken", "broiler", "fish", "salmon", "shrimp",
+    "agri", "agro", "soy", "manure", "methane", "nitrogen", "food",
+    "protein", "grazing", "abattoir",
     "fleisch", "milch", "schwein", "geflügel", "rind", "kalb", "fisch", "lachs",
-    "futter", "bauer", "bäuerin", "soja", "gülle", "eier", "agrar", "hof",
-    "carne", "leche", "lácteo", "cerdo", "porcino", "vacuno", "pollo", "aves",
+    "futter", "bauer", "bäuerin", "gülle", "eier", "agrar",
+    "carne", "leche", "lácteo", "cerdo", "porcino", "vacuno", "pollo",
     "pescado", "salmón", "pienso", "huevo", "comedor", "granja", "purines",
     "viande", "lait", "laitier", "porc", "volaille", "bovin", "poisson",
-    "saumon", "aliment", "paysan", "lisier", "œuf", "oeuf", "ferme",
+    "saumon", "aliment", "paysan", "lisier", "œuf", "oeuf",
     "latte", "suino", "pollame", "bovino", "pesce", "salmone", "contadino",
-    "kød", "mælk", "svin", "fjerkræ", "kvæg", "laks", "foder", "bonde", "æg",
-    "kött", "mjölk", "gris", "nöt", "fisk", "ägg", "djurhållning",
+    "kød", "mælk", "svin", "fjerkræ", "kvæg", "laks", "foder",
+    "kött", "mjölk", "mejeri", "djurhållning",
 ]
+
+# Woorden die als voorvoegsel te veel vals alarm geven ('pig' in 'pigment',
+# 'feed' in 'feedback', 'bonde' in de achternaam Bonde). Alleen als heel woord,
+# met de gangbare verbuigingen erachter.
+TOPIC_WOORDEN = [
+    "stal", "stallen", "gras", "hof", "höfe", "aves", "nöt", "gris", "grisar",
+    "pig", "pigs", "piglet", "piglets", "hog", "hogs", "hens", "laying hen",
+    "egg", "eggs", "æg", "ägg", "crop", "crops", "herd", "herds",
+    "feed", "feeds", "farm", "farms", "farmer", "farmers", "farming",
+    "farmland", "ferme", "fermes", "fisk", "fiskeri",
+    "zeug", "zeugen", "kip", "kippen", "koe", "koeien",
+]
+
+_TOPIC_WOORD_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(TOPIC_WOORDEN, key=len, reverse=True)) + r")\b", re.I
+)
 
 # Bedrijven en ketens uit de voedselketen. Veel koppen noemen alleen het bedrijf
 # ('Lidl Aldi Stand Up For The Amazon') zonder één voedselwoord.
@@ -1057,14 +1089,22 @@ TOPIC_BEDRIJVEN = [
     "jbs", "cargill", "tyson", "smithfield", "danish crown", "arla", "lactalis",
     "danone", "nestlé", "nestle", "unilever", "mowi", "bakkafrost", "salmar",
     "leroy", "cooke", "grieg", "brf", "marfrig", "minerva", "bunge", "adm",
-    "louis dreyfus", "corteva", "syngenta", "bayer", "basf", "yara",
+    "louis dreyfus", "corteva", "syngenta", "basf", "yara",
     "lidl", "aldi", "carrefour", "tesco", "sainsbury", "ahold", "albert heijn",
-    "jumbo", "plus ", "rewe", "edeka", "mercadona", "coop ", "auchan", "leclerc",
+    "jumbo", "rewe", "edeka", "mercadona", "auchan", "leclerc",
     "mcdonald", "burger king", "kfc", "grupo mateus", "pilgrim", "perdue",
-    "fonterra", "saputo", "müller milch", "de heus", "forfarmers", "agrifirm",
+    "fonterra", "dairynz", "saputo", "müller milch", "de heus", "forfarmers",
+    "agrifirm", "danish crown", "nortura", "hkscan",
 ]
 
+# Bedrijfsnamen die ook gewone woorden zijn: alleen als heel woord.
+# 'bayer' zat in 'Bayerischen Klimaschutzgesetz', 'plus' in elke zin.
+# "plus" is in het Nederlands een gewoon woord; de supermarktketen weegt
+# niet op tegen de ruis die dat oplevert.
+TOPIC_BEDRIJVEN_WOORD = ["bayer", "coop", "grieg", "cooke", "adm", "brf"]
+
 _TOPIC_PREFIX_RE = re.compile(r"\b(?:" + "|".join(TOPIC_PREFIXES) + r")", re.I)
+_TOPIC_BEDRIJF_RE = re.compile(r"\b(?:" + "|".join(TOPIC_BEDRIJVEN_WOORD) + r")\b", re.I)
 
 def is_on_topic(item):
     """True als titel of snippet over voedsel, landbouw, vee of vis gaat."""
@@ -1074,6 +1114,10 @@ def is_on_topic(item):
     if any(term in tekst for term in TOPIC_SUBSTRINGS):
         return True
     if any(bedrijf in tekst for bedrijf in TOPIC_BEDRIJVEN):
+        return True
+    if _TOPIC_BEDRIJF_RE.search(tekst):
+        return True
+    if _TOPIC_WOORD_RE.search(tekst):
         return True
     return bool(_TOPIC_PREFIX_RE.search(tekst))
 
@@ -1111,14 +1155,37 @@ def scrape_substack_monthly(seen, dagen=None, max_per_bron=2):
     items, stats = [], []
 
     for src in SUBSTACK_MONTHLY:
-        try:
-            r = fetch(src["url"], timeout=20)
-            if r.status_code != 200:
-                raise RuntimeError(f"HTTP {r.status_code}")
-            feed = feedparser.parse(r.content)
-            entries = feed.entries or []
-        except Exception as e:
-            print(f"  {src['name']}: ⚠ fout: {e}")
+        entries, fouten = [], []
+
+        # Substack weigert sommige verzoeken vanaf datacenter-IP's zoals die van
+        # GitHub Actions. Drie routes proberen voordat we het opgeven.
+        for naam_route, haal in (
+            ("requests", lambda u: fetch(u, timeout=20)),
+            ("cloudscraper", lambda u: fetch_cs(u, timeout=25)),
+        ):
+            try:
+                r = haal(src["url"])
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                feed = feedparser.parse(r.content)
+                if feed.entries:
+                    entries = feed.entries
+                    break
+                raise RuntimeError("feed leeg")
+            except Exception as e:
+                fouten.append(f"{naam_route}: {e}")
+
+        if not entries:
+            try:
+                feed = feedparser.parse(src["url"])      # feedparser's eigen fetch
+                entries = feed.entries or []
+                if not entries:
+                    raise RuntimeError(f"status {feed.get('status')}")
+            except Exception as e:
+                fouten.append(f"feedparser: {e}")
+
+        if not entries:
+            print(f"  {src['name']}: ⚠ fout — {' | '.join(fouten)}")
             stats.append((f"Substack · {src['name']}", 0, 0, True, 0))
             continue
 
