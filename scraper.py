@@ -6,7 +6,8 @@ Vereist omgevingsvariabelen:
     ANTHROPIC_API_KEY
     GMAIL_USER
     GMAIL_APP_PASSWORD
-    NEWSLETTER_TO   (optioneel, default = GMAIL_USER)
+    NEWSLETTER_TO   (optioneel, default = GMAIL_USER; meerdere adressen
+                     mogen gescheiden worden door komma of puntkomma)
 """
 
 import os
@@ -1621,20 +1622,35 @@ def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bek
 # ── Mail ──────────────────────────────────────────────────────────────────────
 
 def send_mail(html, subject):
-    sender    = os.environ["GMAIL_USER"]
-    password  = os.environ["GMAIL_APP_PASSWORD"]
-    recipient = os.environ.get("NEWSLETTER_TO", sender)
+    sender   = os.environ["GMAIL_USER"]
+    password = os.environ["GMAIL_APP_PASSWORD"]
+
+    # NEWSLETTER_TO mag meerdere adressen bevatten, gescheiden door komma's of
+    # puntkomma's. smtplib verwacht een lijst: een string met komma's erin zou
+    # als één (ongeldig) adres worden behandeld en nergens aankomen.
+    ruw = os.environ.get("NEWSLETTER_TO", sender)
+    ontvangers = []
+    for adres in re.split(r"[,;]", ruw):
+        adres = adres.strip()
+        if adres and adres not in ontvangers:
+            ontvangers.append(adres)
+    if not ontvangers:
+        ontvangers = [sender]
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = sender
-    msg["To"]      = recipient
+    msg["To"]      = ", ".join(ontvangers)
     msg.attach(MIMEText(html, "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
         srv.login(sender, password)
-        srv.sendmail(sender, recipient, msg.as_string())
-    print(f"✓ Verstuurd naar {recipient}")
+        geweigerd = srv.sendmail(sender, ontvangers, msg.as_string())
+
+    gelukt = [a for a in ontvangers if a not in geweigerd]
+    print(f"✓ Verstuurd naar {', '.join(gelukt)}")
+    for adres, fout in geweigerd.items():
+        print(f"  ⚠ geweigerd: {adres} — {fout}")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
