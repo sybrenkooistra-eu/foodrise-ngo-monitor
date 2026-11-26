@@ -28,6 +28,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+from html import unescape as html_unescape
 from anthropic import Anthropic
 from pathlib import Path
 
@@ -235,6 +236,13 @@ SOURCES = [
      "url": "https://www.greenpeace.org/nl/nieuws/nieuwsberichten/",
      "link_pattern": r"greenpeace\.org/nl/nieuws/[a-z0-9-]+/[a-z0-9-]{5,}",
      "exclude_pattern": r"/(nieuwsberichten|pers|onderzoek|blogs)/?$"},
+
+    # Vervangt de Substack-feed, die vanaf GitHub Actions geblokkeerd werd.
+    # De eigen nieuwspagina is bovendien actueler en specifieker dan de
+    # maandelijkse digest: rechtszaken, EU-besluiten, kweekvis-dossiers.
+    {"name": "Animal Law Europe (EU)",
+     "type": "rss",
+     "url": "https://animallaweurope.org/feed/"},
 
     # ── GAIA (BE) ─────────────────────────────────────────
     # Let op: dit is een catalogus van lopende campagnes, geen nieuwsstroom.
@@ -1156,141 +1164,155 @@ def is_on_topic(item):
     return bool(_TOPIC_PREFIX_RE.search(tekst))
 
 
-# ── Maandelijkse Substack-overzichten ────────────────────────────────────────
+# ── Nieuwsbrieven (Substack e.d.) ───────────────────────────────────────────
+#
+# Substack weigert verzoeken vanaf datacenter-IP's, dus de directe route werkt
+# lokaal wél en op GitHub Actions nooit. Daarom twee relays erachter, die de
+# feed op hun eigen server ophalen en aan ons doorgeven. Geen Claude-call:
+# datum, titel en de eerste regels komen uit de feed zelf.
 
-SUBSTACK_MONTHLY = [
+NIEUWSBRIEVEN = [
     {
         "name": "Animal Law & Policy Europe",
-        "label": "SUBSTACK: EU OVERVIEW UPDATE",
+        "label": "NIEUWSBRIEF: EU OVERVIEW UPDATE",
         "url": "https://animallaweurope.substack.com/feed",
         "site": "https://animallaweurope.substack.com/",
-        "context": ("Maandelijks overzicht van het European Institute for Animal Law & Policy "
-                    "over EU-wetgeving en rechtszaken rond dierenwelzijn en veehouderij."),
     },
     {
         "name": "Farm Animal Welfare",
-        "label": "SUBSTACK: FARM ANIMAL WELFARE UPDATE",
+        "label": "NIEUWSBRIEF: FARM ANIMAL WELFARE",
         "url": "https://farmanimalwelfare.substack.com/feed",
         "site": "https://farmanimalwelfare.substack.com/",
-        "context": ("Analyse van Lewis Bollard (Open Philanthropy) over de wereldwijde strijd "
-                    "tegen de bio-industrie: wetgeving, bedrijfsbeloftes, strategie."),
     },
 ]
 
-def scrape_substack_monthly(seen, dagen=None, max_per_bron=2):
-    """Haal nieuwe edities op uit de maandelijkse Substack-overzichten.
 
-    Geen datumvenster: deze twee publiceren onregelmatig (soms twee of drie
-    maanden stil), dus elk venster snijdt edities weg. De dedupe via
-    seen_items.json zorgt dat een editie precies één keer langskomt.
-    Retourneert (items, stats).
-    """
-    cutoff = (datetime.now() - timedelta(days=dagen)) if dagen else None
+def _entries_via_openrss(feed_url):
+    """Open RSS haalt de pagina op zijn eigen server op en geeft RSS terug."""
+    kaal = re.sub(r"^https?://", "", feed_url).rstrip("/")
+    kaal = re.sub(r"/feed$", "", kaal)
+    r = fetch(f"https://openrss.org/{kaal}", timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    feed = feedparser.parse(r.content)
+    if not feed.entries:
+        raise RuntimeError("geen items")
+    return feed.entries
+
+
+def _entries_via_rss2json(feed_url):
+    """rss2json geeft JSON terug; zelfde velden, andere namen."""
+    from urllib.parse import quote
+    r = fetch("https://api.rss2json.com/v1/api.json?rss_url="
+              + quote(feed_url, safe=""), timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    data = r.json()
+    if data.get("status") != "ok" or not data.get("items"):
+        raise RuntimeError(data.get("message") or "geen items")
+    omgezet = []
+    for it in data["items"]:
+        entry = {
+            "title": it.get("title", ""),
+            "link": it.get("link", ""),
+            "summary": it.get("description") or it.get("content") or "",
+        }
+        datum = (it.get("pubDate") or "").strip()      # '2026-11-10 09:02:31'
+        for vorm in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                entry["published_parsed"] = datetime.strptime(datum, vorm).timetuple()
+                break
+            except ValueError:
+                continue
+        omgezet.append(entry)
+    return omgezet
+
+
+def _entries_direct(feed_url):
+    r = fetch(feed_url, timeout=20)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    feed = feedparser.parse(r.content)
+    if not feed.entries:
+        raise RuntimeError("geen items")
+    return feed.entries
+
+
+# Open RSS geeft voor Substack-publicaties geen items terug (getest 26-11-2026).
+# De functie blijft staan, maar zit niet in de keten: anders doet elke run een
+# verzoek dat altijd faalt en zet dat een misleidende fout in het log.
+# rss2json is de werkende terugvaloptie vanaf GitHub Actions.
+ROUTES = [
+    ("direct", _entries_direct),
+    ("rss2json", _entries_via_rss2json),
+]
+
+
+def scrape_nieuwsbrieven(seen, max_per_bron=2):
+    """Nieuwe nieuwsbrief-edities ophalen. Retourneert (items, stats)."""
     items, stats = [], []
 
-    for src in SUBSTACK_MONTHLY:
-        entries, fouten = [], []
-
-        # Substack weigert sommige verzoeken vanaf datacenter-IP's zoals die van
-        # GitHub Actions. Drie routes proberen voordat we het opgeven.
-        for naam_route, haal in (
-            ("requests", lambda u: fetch(u, timeout=20)),
-            ("cloudscraper", lambda u: fetch_cs(u, timeout=25)),
-        ):
+    for src in NIEUWSBRIEVEN:
+        entries, fouten, via = [], [], ""
+        for naam_route, haal in ROUTES:
             try:
-                r = haal(src["url"])
-                if r.status_code != 200:
-                    raise RuntimeError(f"HTTP {r.status_code}")
-                feed = feedparser.parse(r.content)
-                if feed.entries:
-                    entries = feed.entries
-                    break
-                raise RuntimeError("feed leeg")
+                entries = haal(src["url"])
+                via = naam_route
+                break
             except Exception as e:
                 fouten.append(f"{naam_route}: {e}")
 
         if not entries:
-            try:
-                feed = feedparser.parse(src["url"])      # feedparser's eigen fetch
-                entries = feed.entries or []
-                if not entries:
-                    raise RuntimeError(f"status {feed.get('status')}")
-            except Exception as e:
-                fouten.append(f"feedparser: {e}")
-
-        if not entries:
-            print(f"  {src['name']}: ⚠ fout — {' | '.join(fouten)}")
-            stats.append((f"Substack · {src['name']}", 0, 0, True, 0))
+            print(f"  {src['name']}: \u26a0 fout \u2014 {' | '.join(fouten)}")
+            stats.append((f"Nieuwsbrief \u00b7 {src['name']}", 0, 0, True, 0))
             continue
 
         nieuw = []
         for e in entries[:10]:
             link = (e.get("link") or "").strip()
-            title = (e.get("title") or "").strip()
-            if not link or not title:
+            titel = html_unescape((e.get("title") or "").strip())
+            if not link or not titel:
                 continue
             item_id = uid(link)
             if item_id in seen:
                 continue
 
             published = e.get("published_parsed") or e.get("updated_parsed")
-            date_str = ""
-            if published:
-                if cutoff and datetime(*published[:6]) < cutoff:
-                    continue
-                date_str = time.strftime("%-d %b %Y", published)
+            datum = time.strftime("%-d %b %Y", published) if published else ""
+
+            # Eerste regels uit de feed zelf: tags eruit, entiteiten gedecodeerd
+            # ('&#8212;' werd anders letterlijk in de mail afgedrukt).
+            ruw = e.get("summary") or e.get("description") or ""
+            tekst = re.sub(r"<[^>]+>", " ", ruw)
+            tekst = html_unescape(tekst)
+            tekst = re.sub(r"\s+", " ", tekst).strip()
+            if len(tekst) > 320:
+                knip = tekst.rfind(" ", 0, 320)
+                tekst = tekst[:knip if knip > 100 else 320].rstrip(" ,;:-") + "\u2026"
 
             nieuw.append({
                 "id": item_id,
                 "name": src["name"],
                 "label": src["label"],
                 "site": src["site"],
-                "context": src["context"],
-                "title": title,
+                "title": titel,
                 "link": link,
-                "date": date_str,
-                "snippet": get_snippet(e),
+                "date": datum,
+                "intro": tekst,
             })
             if len(nieuw) >= max_per_bron:
                 break
 
-        print(f"  {src['name']}: {len(nieuw)} nieuwe editie(s) ({len(entries)} in feed)")
-        stats.append((f"Substack · {src['name']}", len(entries), len(nieuw), False, 0))
+        print(f"  {src['name']}: {len(nieuw)} nieuwe editie(s) "
+              f"({len(entries)} in feed, via {via})")
+        stats.append((f"Nieuwsbrief \u00b7 {src['name']}", len(entries), len(nieuw), False, 0))
         items.extend(nieuw)
 
     return items, stats
 
 
-def summarise_substack(client, item):
-    """Korte Nederlandse samenvatting van één Substack-editie."""
-    prompt = f"""Je bent research-assistent voor FoodRise, een Europese campagneorganisatie
-tegen industriële dierlijke landbouw. Doelwitten: FrieslandCampina, Vion, Nutreco/Skretting.
-Thema's: veehouderij, methaan, EU-landbouwbeleid, dierenwelzijnsrecht, kweekvis, veevoer.
-
-Hieronder een nieuwe editie van een maandelijkse nieuwsbrief:
-{item['context']}
-
-Titel: {item['title']}
-Link: {item['link']}
-Inhoud: {item['snippet'][:2500]}
-
-Vat deze editie samen in precies 3 Nederlandse zinnen: wat staat erin en wat is
-het belangrijkste dat FoodRise hieruit moet meenemen. Geen inleiding, alleen de drie zinnen."""
-
-    try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text.strip()
-    except Exception as e:
-        print(f"    ⚠ samenvatting mislukt: {e}")
-        return item.get("snippet", "")[:400]
-
-
-def build_substack_section(items):
-    """Bouw HTML voor de maandelijkse Substack-overzichten."""
+def build_nieuwsbrieven_section(items):
+    """Subkopje met per editie datum, titel en de eerste regels."""
     if not items:
         return ""
 
@@ -1298,26 +1320,26 @@ def build_substack_section(items):
     for it in items:
         datum = (f'<span style="font-size:11px;color:#999;margin-left:8px">'
                  f'{it["date"]}</span>') if it.get("date") else ""
+        intro = (f'<p style="margin:0 0 6px;font-size:13px;color:#555;'
+                 f'line-height:1.5">{it["intro"]}</p>') if it.get("intro") else ""
         blokken += f"""
-        <div style="border-left:3px solid #1C4332;padding:12px 16px;
-                    margin-bottom:18px;background:#f4f8f4">
-          <div style="margin-bottom:6px">
-            <strong style="font-size:13px;color:#1C4332;letter-spacing:.5px">
+        <div style="border-left:3px solid #1C4332;padding:10px 14px;
+                    margin-bottom:16px;background:#f4f8f4">
+          <div style="margin-bottom:5px">
+            <strong style="font-size:12px;color:#1C4332;letter-spacing:.5px">
               {it['label']}
             </strong>
             <span style="font-size:12px;color:#1C4332">
               [<a href="{it['site']}" style="color:#1C4332">{it['name'].lower()}</a>]
             </span>{datum}
           </div>
-          <p style="margin:0 0 6px;font-weight:600;font-size:15px;
+          <p style="margin:0 0 5px;font-weight:600;font-size:15px;
                     color:#1C4332;line-height:1.3">
             <a href="{it['link']}" style="color:#1C4332;text-decoration:none">{it['title']}</a>
           </p>
-          <p style="margin:0 0 6px;font-size:14px;color:#333;line-height:1.5">
-            {it['summary']}
-          </p>
+          {intro}
           <a href="{it['link']}" style="font-size:12px;color:#E8703A;text-decoration:none">
-            → lees de volledige editie
+            \u2192 lees de volledige editie
           </a>
         </div>"""
 
@@ -1327,7 +1349,7 @@ def build_substack_section(items):
                  text-transform:uppercase;color:#1C4332;
                  border-bottom:2px solid #1C4332;
                  padding-bottom:5px;margin-bottom:14px">
-        Maandelijkse overzichten ({len(items)})
+        Nieuwsbrieven ({len(items)})
       </h2>
       {blokken}
     </div>"""
@@ -1921,15 +1943,13 @@ def main():
 
     save_seen(seen | new_seen)
 
-    # Maandelijkse Substack-overzichten
-    print("\nMaandelijkse Substack-overzichten ophalen …")
-    substack_items, substack_stats = scrape_substack_monthly(seen | new_seen)
+    # Nieuwsbrieven (Substack e.d.) — geen Claude-call, alles uit de feed
+    print("\nNieuwsbrieven ophalen …")
+    substack_items, substack_stats = scrape_nieuwsbrieven(seen | new_seen)
     source_stats.extend(substack_stats)
     for it in substack_items:
-        print(f"    samenvatten: {it['title'][:60]} …")
-        it["summary"] = summarise_substack(client, it)
         new_seen.add(it["id"])
-    substack_html = build_substack_section(substack_items)
+    substack_html = build_nieuwsbrieven_section(substack_items)
 
     if total == 0 and not substack_items:
         print("Niets te versturen.")
