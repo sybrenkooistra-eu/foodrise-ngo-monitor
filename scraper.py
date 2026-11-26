@@ -904,8 +904,10 @@ NIEUWE_OOGST_TOPICS = [
      "keywords": ["biomethaan", "biogasopwaardering", "groen gas", "biogas",
                   "mestvergisting", "mestvergister", "monovergister",
                   "vergister", "vergisting", "biobased mest"]},
+    # Géén kale "trouw": dat matchte 'vertrouwen', 'trouwens' en 'getrouwd',
+    # ook in URL-slugs, en leverde artikelen zonder enige Nutreco-link.
     {"label": "Nutreco / Trouw Nutrition",
-     "keywords": ["nutreco", "trouw nutrition", "trouw"]},
+     "keywords": ["nutreco", "trouw nutrition", "trouwnutrition", "skretting"]},
     {"label": "FrieslandCampina",
      "keywords": ["frieslandcampina"]},
     {"label": "Vion",
@@ -993,13 +995,22 @@ def scrape_nieuwe_oogst(max_pages=6):
             last_id = new_last
             offset += 49
 
-    # Filter op trefwoorden
+    # Filter op trefwoorden. Match op woordgrens, niet als losse substring:
+    # 'trouw' zat anders in 'vertrouwen', 'vion' in willekeurige slugs.
+    # In URL-slugs zijn woorden door streepjes gescheiden, dus die eerst
+    # omzetten naar spaties zodat \b ook daar werkt.
     results = {}
     for topic in NIEUWE_OOGST_TOPICS:
+        # \b alleen aan het begin: zo matcht 'vergister' ook 'vergisters' en
+        # 'minister' ook 'ministerie', terwijl 'vertrouwen' buiten de boot valt.
+        patroon = re.compile(
+            r"\b(?:" + "|".join(re.escape(kw) for kw in topic["keywords"]) + r")",
+            re.I,
+        )
         matches = []
         for art in articles:
-            tekst = (art["title"] + " " + art["link"]).lower()
-            if any(kw in tekst for kw in topic["keywords"]):
+            tekst = (art["title"] + " " + art["link"]).lower().replace("-", " ")
+            if patroon.search(tekst):
                 matches.append(art)
         if matches:
             results[topic["label"]] = matches
