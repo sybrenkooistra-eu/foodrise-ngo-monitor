@@ -236,6 +236,28 @@ SOURCES = [
      "link_pattern": r"greenpeace\.org/nl/nieuws/[a-z0-9-]+/[a-z0-9-]{5,}",
      "exclude_pattern": r"/(nieuwsberichten|pers|onderzoek|blogs)/?$"},
 
+    # ── GAIA (BE) ─────────────────────────────────────────
+    # Let op: dit is een catalogus van lopende campagnes, geen nieuwsstroom.
+    # Er staan ~44 campagnes op zonder datum en zonder paginering, en er komt
+    # er maar een paar keer per jaar een bij. Zinvol als signaal "GAIA start
+    # een nieuwe campagne", niet als wekelijkse bron. Seed seen_items.json
+    # met de huidige lijst (test_gaia.py) vóór de eerste run.
+    {"name": "GAIA campagnes (BE)",
+     "type": "html_links",
+     "url": "https://www.gaia.be/nl/campagnes",
+     "link_pattern": r"gaia\.be/nl/campagnes/[a-z0-9-]{4,}/?$",
+     "exclude_pattern": r"/nl/campagnes/?$"},
+
+    # De wekelijkse GAIA-bron. Niet de RSS-feeds: gaia.be/nl/rss.xml is
+    # ondanks het /nl/-pad meertalig, en press.gaia.be/feed zet elk
+    # persbericht er drie keer in (NL, EN, FR). Deze pagina is Nederlands
+    # van constructie, dus zonder taalduplicaten.
+    {"name": "GAIA nieuws (BE)",
+     "type": "html_links",
+     "url": "https://www.gaia.be/nl/nieuws",
+     "link_pattern": r"gaia\.be/nl/nieuws/[a-z0-9-]{5,}/?$",
+     "exclude_pattern": r"/nl/nieuws/?$"},
+
     # ── Animals Today ─────────────────────────────────────
     # WordPress-feed in plaats van de post-content-container: de artikel-URL's
     # zijn kale slugs zonder datum of categorie, dus niet te onderscheiden van
