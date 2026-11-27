@@ -1064,6 +1064,258 @@ def build_nieuwe_oogst_section(results):
     </div>"""
 
 
+# ── iLaks (NO) — zalmindustrie monitor ──────────────────────────────────────
+#
+# Noorse vakpers voor de zalmteelt: acht tot vijftien artikelen per dag, en
+# alles gaat over zalm. Een trefwoordfilter op onderwerp helpt dus niet — dat
+# laat alles door. In plaats daarvan leest Claude de koppen van de week en
+# kiest de vijf die voor FoodRise iets betekenen, met een Nederlandse
+# samenvatting erbij (de bron is Noors).
+
+ILAKS_URL = "https://ilaks.no/"
+
+# Slugs die geen artikel zijn: vaste pagina's, categorieën, auteurs.
+ILAKS_UIT = re.compile(
+    r"/(category|tag|author|wp-|om-oss|kontakt|annonse|abonnement|personvern|"
+    r"nyhetsbrev|cookie|feed|page|stillinger|om-ilaks)", re.I)
+
+
+def _schoon_ilaks_link(url):
+    """Haal tracking-parameters eraf.
+
+    De feed geeft '?mtm_campaign=feed_click&mtm_source=RSS2&…' mee. Zonder
+    opschonen krijgt hetzelfde artikel via de feed en via de voorpagina twee
+    verschillende uid's, en komt het dus dubbel langs.
+    """
+    return url.split("?")[0].split("#")[0]
+
+
+def _ilaks_via_rest(cutoff_iso, maximaal):
+    """WordPress REST API: filtert op datum en geeft tot 100 artikelen per keer."""
+    r = fetch("https://ilaks.no/wp-json/wp/v2/posts"
+              f"?per_page=100&after={cutoff_iso}&_fields=link,title,date",
+              timeout=25)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    posts = r.json()
+    if not isinstance(posts, list) or not posts:
+        raise RuntimeError("geen posts")
+    uit = []
+    for post in posts[:maximaal]:
+        link = _schoon_ilaks_link((post.get("link") or "").strip())
+        titel = html_unescape(((post.get("title") or {}).get("rendered") or "").strip())
+        if not link or not titel or ILAKS_UIT.search(link):
+            continue
+        datum = ""
+        ruw = (post.get("date") or "")[:10]          # '2026-11-27'
+        if ruw:
+            try:
+                datum = datetime.strptime(ruw, "%Y-%m-%d").strftime("%-d %b")
+            except ValueError:
+                pass
+        uit.append({"id": uid(link), "source": "iLaks",
+                    "title": titel, "link": link, "date": datum})
+    return uit
+
+
+def _ilaks_via_feed(cutoff, maximaal, paginas=6):
+    """De feed houdt maar ~12 items vast, dus doorbladeren met ?paged=N."""
+    uit, gezien = [], set()
+    for pagina in range(1, paginas + 1):
+        url = "https://ilaks.no/feed/" + (f"?paged={pagina}" if pagina > 1 else "")
+        try:
+            r = fetch(url, timeout=20)
+            if r.status_code != 200:
+                break
+            feed = feedparser.parse(r.content)
+        except Exception:
+            break
+        if not feed.entries:
+            break
+
+        te_oud = False
+        for e in feed.entries:
+            link = _schoon_ilaks_link((e.get("link") or "").strip())
+            titel = html_unescape((e.get("title") or "").strip())
+            if not link or not titel or ILAKS_UIT.search(link) or link in gezien:
+                continue
+            p = e.get("published_parsed") or e.get("updated_parsed")
+            if p and datetime(*p[:6]) < cutoff:
+                te_oud = True
+                continue
+            gezien.add(link)
+            uit.append({"id": uid(link), "source": "iLaks", "title": titel,
+                        "link": link, "date": time.strftime("%-d %b", p) if p else ""})
+        if te_oud or len(uit) >= maximaal:
+            break
+    if not uit:
+        raise RuntimeError("geen items")
+    return uit[:maximaal]
+
+
+def _ilaks_via_voorpagina(maximaal):
+    """Laatste redmiddel: de voorpagina. Geeft ~39 artikelen, zonder datums."""
+    r = fetch(ILAKS_URL, timeout=20)
+    soup = BeautifulSoup(r.text, "html.parser")
+    uit, gezien = [], set()
+    for a in soup.find_all("a", href=True):
+        href = _schoon_ilaks_link(a["href"])
+        if not href.startswith("https://ilaks.no/"):
+            continue
+        pad = href.replace("https://ilaks.no/", "").strip("/")
+        if not pad or "/" in pad or ILAKS_UIT.search(href) or href in gezien:
+            continue
+        titel = link_title(a)
+        if len(titel) < 12:
+            continue
+        gezien.add(href)
+        uit.append({"id": uid(href), "source": "iLaks",
+                    "title": titel, "link": href, "date": ""})
+    if not uit:
+        raise RuntimeError("geen links")
+    return uit[:maximaal]
+
+
+def scrape_ilaks(dagen=8, maximaal=90):
+    """Artikelen van iLaks over de afgelopen week. Retourneert (items, stats-rij).
+
+    Drie routes op een rij, want de feed alleen reikt maar anderhalve dag terug:
+    de REST-API kan op datum filteren, de feed kan doorbladeren, en de
+    voorpagina is het laatste redmiddel.
+    """
+    cutoff = datetime.now() - timedelta(days=dagen)
+    cutoff_iso = cutoff.strftime("%Y-%m-%dT00:00:00")
+
+    routes = [
+        ("rest",       lambda: _ilaks_via_rest(cutoff_iso, maximaal)),
+        ("feed",       lambda: _ilaks_via_feed(cutoff, maximaal)),
+        ("voorpagina", lambda: _ilaks_via_voorpagina(maximaal)),
+    ]
+
+    fouten = []
+    for naam, haal in routes:
+        try:
+            items = haal()
+            print(f"  iLaks: {len(items)} artikelen (via {naam})")
+            return items, ("iLaks (NO)", len(items), len(items), False, 0)
+        except Exception as e:
+            fouten.append(f"{naam}: {e}")
+
+    print(f"  iLaks: \u26a0 fout \u2014 {' | '.join(fouten)}")
+    return [], ("iLaks (NO)", 0, 0, True, 0)
+
+
+def select_ilaks(client, kandidaten, aantal=5):
+    """Laat Claude de meest relevante artikelen kiezen en samenvatten."""
+    if not kandidaten:
+        return []
+
+    lijst = "\n".join(f"{i+1}. {c['title']} — {c['link']}"
+                      for i, c in enumerate(kandidaten))
+
+    prompt = f"""Je bent research-assistent voor FoodRise, een Europese campagneorganisatie
+tegen industriële dierlijke landbouw op land en in zee. Een kerncampagne richt zich op
+Nutreco en zijn visvoerdochter Skretting.
+
+Hieronder staan koppen uit iLaks, Noorse vakpers vóór de zalmteeltindustrie. Dit is
+een bron 'van de vijand': je leest mee om te weten wat de sector van plan is.
+
+Selecteer de {aantal} artikelen die voor FoodRise het meest bruikbaar zijn. Geef voorrang aan:
+- visvoer en de samenstelling daarvan (wildvis/forage fish, kip of slachtafval, insecten, algen)
+- Skretting, Nutreco, Mowi, Lerøy, Grieg, SalMar, Cermaq, Bakkafrost
+- sterfte, ziekte, zeeluis, ontsnappingen, dierenwelzijn
+- vergunningen, wetgeving, belastingen, lobbywerk en uitbreiding (offshore, landbased)
+- schade aan wilde zalm en aan het ecosysteem
+- cijfers of toegevingen die de sector zelf publiceert en die tegen hen te gebruiken zijn
+
+Geef GEEN voorrang aan: aandelenkoersen, kwartaalcijfers zonder beleidshoek,
+personeelsbenoemingen, en PR van technologieleveranciers.
+
+Geef per artikel de originele Noorse titel, de link, en twee Nederlandse zinnen:
+de eerste zegt wat er staat, de tweede waarom het voor FoodRise iets betekent.
+
+Exact dit formaat, {aantal} blokken, geen extra tekst:
+
+ARTIKEL 1
+Titel: [originele titel]
+Link: [url]
+Samenvatting: [2 zinnen in het Nederlands]
+
+Kandidaten:
+{lijst}"""
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+    except Exception as e:
+        print(f"  \u26a0 iLaks-selectie mislukt: {e}")
+        return []
+
+    gekozen = []
+    for blok in raw.split("ARTIKEL ")[1:]:
+        entry, samenvatting, in_sv = {}, [], False
+        for regel in blok.strip().splitlines():
+            if regel.startswith("Titel:"):
+                entry["title"] = regel.replace("Titel:", "").strip()
+            elif regel.startswith("Link:"):
+                entry["link"] = regel.replace("Link:", "").strip()
+            elif regel.startswith("Samenvatting:"):
+                samenvatting.append(regel.replace("Samenvatting:", "").strip())
+                in_sv = True
+            elif in_sv and regel.strip():
+                samenvatting.append(regel.strip())
+        entry["summary"] = " ".join(samenvatting)
+        if entry.get("title") and entry.get("link") and entry.get("summary"):
+            # datum overnemen uit de kandidaat met dezelfde link
+            for k in kandidaten:
+                if k["link"] == entry["link"]:
+                    entry["date"] = k.get("date", "")
+                    entry["id"] = k["id"]
+                    break
+            gekozen.append(entry)
+
+    return gekozen[:aantal]
+
+
+def build_ilaks_section(artikelen, totaal=0):
+    """HTML voor de iLaks-sectie, zelfde 'van de vijand'-opmaak als Nieuwe Oogst."""
+    if not artikelen:
+        return ""
+
+    kaarten = ""
+    for art in artikelen:
+        datum = (f'<span style="font-size:11px;color:#999;margin-left:6px">'
+                 f'{art["date"]}</span>') if art.get("date") else ""
+        kaarten += f"""
+        <div style="padding:10px 0;border-bottom:1px solid #f0f0f0">
+          <a href="{art['link']}" style="font-size:14px;color:#1C4332;
+             text-decoration:none;font-weight:600">{art['title']}</a>{datum}
+          <p style="margin:5px 0 0;font-size:13px;color:#444;line-height:1.5">
+            {art['summary']}
+          </p>
+        </div>"""
+
+    uit = f" uit {totaal} artikelen" if totaal else ""
+    return f"""
+    <div style="margin-bottom:36px;border:1px solid #f0d0cc;border-radius:6px;padding:16px 20px">
+      <h2 style="font-size:13px;font-weight:700;letter-spacing:1.5px;
+                 text-transform:uppercase;color:#C0492F;
+                 border-bottom:2px solid #C0492F;
+                 padding-bottom:5px;margin-bottom:12px">
+        iLaks — zalmindustrie monitor
+      </h2>
+      {kaarten}
+      <p style="font-size:11px;color:#999;margin:12px 0 0">
+        Bron: <a href="https://ilaks.no/" style="color:#999">ilaks.no</a>
+        \u00b7 {len(artikelen)} geselecteerd{uit} van de afgelopen 8 dagen
+      </p>
+    </div>"""
+
+
 # ── Onderwerpfilter ──────────────────────────────────────────────────────────
 #
 # Veel bronnen zijn brede milieuorganisaties die ook over staal, verkeer of
@@ -1503,7 +1755,9 @@ def build_bekendmakingen_section(items):
     </div>"""
 
 
-def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bekendmakingen_html="", source_stats=None, substack_html=""):
+def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="",
+               bekendmakingen_html="", source_stats=None, substack_html="",
+               ilaks_html=""):
     # Verzamel alle items en sorteer op relevantie
     all_items = []
     for source_name, items in items_by_source.items():
@@ -1611,6 +1865,7 @@ def build_html(items_by_source, week, opinion_html="", nieuwe_oogst_html="", bek
         render_section(f"Relevant — Midden ({len(midden)} items)", midden, "#FCE9B8") +
         opinion_html +
         nieuwe_oogst_html +
+        ilaks_html +
         bekendmakingen_html +
         render_laag(laag)
     )
@@ -1982,6 +2237,23 @@ def main():
         print("  Geen matches deze week")
     nieuwe_oogst_html = build_nieuwe_oogst_section(no_results)
 
+    # iLaks — zalmindustrie monitor. Claude kiest uit de hele week; alleen
+    # de geselecteerde artikelen worden als gezien gemarkeerd, zodat een stuk
+    # dat deze week net afvalt volgende week nog gekozen kan worden.
+    print("\niLaks monitor scrapen …")
+    ilaks_kandidaten, ilaks_stat = scrape_ilaks()
+    source_stats.append(ilaks_stat)
+    ilaks_nieuw = [k for k in ilaks_kandidaten if k["id"] not in (seen | new_seen)]
+    print(f"  {len(ilaks_nieuw)} nog niet eerder gezien")
+    # Zeven, niet vijf: de REST-route levert ~57 kandidaten per week en daar
+    # zitten er meestal meer dan vijf tussen die het halen moeten.
+    ilaks_keuze = select_ilaks(client, ilaks_nieuw, aantal=7) if ilaks_nieuw else []
+    for art in ilaks_keuze:
+        if art.get("id"):
+            new_seen.add(art["id"])
+    print(f"  {len(ilaks_keuze)} geselecteerd")
+    ilaks_html = build_ilaks_section(ilaks_keuze, len(ilaks_nieuw))
+
     # Officiële bekendmakingen
     print("\nOfficiële bekendmakingen scrapen …")
     bm_items = scrape_bekendmakingen(seen | new_seen)
@@ -1994,7 +2266,8 @@ def main():
     bekendmakingen_html = build_bekendmakingen_section(bm_items)
 
     html    = build_html(items_by_source, week, opinion_html, nieuwe_oogst_html,
-                         bekendmakingen_html, source_stats, substack_html)
+                         bekendmakingen_html, source_stats, substack_html,
+                         ilaks_html)
     subject = f"FoodRise NGO Monitor · {week} · {total} items"
     send_mail(html, subject)
 
